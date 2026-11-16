@@ -55,9 +55,15 @@ control. Ctrl+S saves, Ctrl+Shift+S saves as, Ctrl+O opens, Ctrl+Z undoes,
 Ctrl+Y or Ctrl+Shift+Z redoes, Escape cancels a drag. Ctrl+T toggles the timeline and Ctrl+Shift+L switches theme.
 
 In the timeline, select a layer and property, seek to a time, then add or
-adjust a keyframe. Playback loops for the page duration; keys support linear
-or constant interpolation. `Editar base` returns the canvas to its unanimated
-values. Advanced curves, nested sequences, and morphing are not implemented.
+adjust a keyframe. The curve button cycles through constant, linear, ease-in,
+ease-out, and ease-in-out presets; the adjacent graph previews the selected
+curve. Playback loops for the page duration. `Editar base` returns the canvas
+to its unanimated values. Nested sequences can be added at the current playhead
+and selected from the timeline. A child sequence uses an offset and duration
+relative to its parent, plays once, then holds its last values. Direct curve
+editing and path/morph-key authoring are not yet available in the UI. The
+document model and renderer support paths and morph keyframes between paths
+with matching segment topology.
 
 ## Troubleshooting
 

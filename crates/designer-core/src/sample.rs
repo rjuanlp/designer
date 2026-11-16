@@ -3,7 +3,10 @@
 //! It is original content, written for this project. Names are in Spanish
 //! because the initial interface language is Spanish.
 
-use crate::{Animation, Color, Document, Node, NodeId, NodeKind, Page, PageId, Rect};
+use crate::{
+    Animation, Color, Document, Node, NodeId, NodeKind, Page, PageId, PathData, PathPoint,
+    PathSegment, Rect,
+};
 
 const CANVAS: Color = Color::rgb(30, 31, 36);
 const PAPER: Color = Color::rgb(242, 244, 248);
@@ -181,6 +184,29 @@ pub fn sample_document() -> Document {
             )
         })
         .collect();
+    palette.children.push(node(
+        &mut ids,
+        "Trazado",
+        NodeKind::Path {
+            path: PathData {
+                start: PathPoint { x: 0.5, y: 0.0 },
+                segments: vec![
+                    PathSegment::LineTo {
+                        end: PathPoint { x: 1.0, y: 1.0 },
+                    },
+                    PathSegment::LineTo {
+                        end: PathPoint { x: 0.0, y: 1.0 },
+                    },
+                    PathSegment::LineTo {
+                        end: PathPoint { x: 0.5, y: 0.0 },
+                    },
+                ],
+                closed: true,
+            },
+        },
+        Rect::new(24.0, 100.0, 48.0, 48.0),
+        Some(MINT),
+    ));
 
     Document {
         name: "Documento de ejemplo".to_owned(),
@@ -214,7 +240,7 @@ mod tests {
         assert_eq!(document.validate(), Ok(()));
 
         let page = &document.pages[0];
-        let mut kinds = [false; 5];
+        let mut kinds = [false; 6];
         let (mut hidden, mut locked, mut long_name, mut translucent) = (false, false, false, false);
         fn walk(node: &Node, visit: &mut dyn FnMut(&Node)) {
             visit(node);
@@ -228,6 +254,7 @@ mod tests {
                     NodeKind::Rectangle { .. } => 2,
                     NodeKind::Ellipse => 3,
                     NodeKind::Text { .. } => 4,
+                    NodeKind::Path { .. } => 5,
                 };
                 kinds[index] = true;
                 hidden |= !node.visible;

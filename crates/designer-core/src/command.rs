@@ -10,7 +10,8 @@ use std::{error::Error, fmt};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Color, Document, Easing, Keyframe, ModelError, Node, NodeId, NodeKind, PageId, Property, Rect,
+    Color, Document, Easing, Keyframe, ModelError, MorphKeyframe, Node, NodeId, NodeKind, PageId,
+    PathData, Property, Rect, Sequence, SequenceId,
 };
 
 /// Most operations one transaction may contain.
@@ -111,6 +112,29 @@ pub enum Operation {
         /// Time of the keyframe.
         time_ms: u32,
     },
+    /// Add or replace a path morph keyframe.
+    SetMorphKeyframe {
+        /// Target page.
+        page: PageId,
+        /// Animated path node.
+        node: NodeId,
+        /// Time from the start of the animation.
+        time_ms: u32,
+        /// Path geometry at that time.
+        path: PathData,
+        /// Interpolation towards the next keyframe.
+        #[serde(default)]
+        easing: Easing,
+    },
+    /// Remove a path morph keyframe.
+    RemoveMorphKeyframe {
+        /// Target page.
+        page: PageId,
+        /// Animated path node.
+        node: NodeId,
+        /// Time of the keyframe.
+        time_ms: u32,
+    },
     /// Change the length of the page animation.
     SetDuration {
         /// Target page.
@@ -118,11 +142,102 @@ pub enum Operation {
         /// New duration. No keyframe may lie after it.
         duration_ms: u32,
     },
+    /// Add a nested sequence at the page level or inside another sequence.
+    AddSequence {
+        /// Target page.
+        page: PageId,
+        /// Parent sequence, or `None` for a page-level sequence.
+        parent: Option<SequenceId>,
+        /// Unique identifier within the page animation.
+        sequence: SequenceId,
+        /// Name shown in the timeline.
+        name: String,
+        /// Start offset relative to the parent clock.
+        offset_ms: u32,
+        /// Local duration; the sequence holds its final values afterwards.
+        duration_ms: u32,
+    },
+    /// Remove a sequence and all of its descendants.
+    RemoveSequence {
+        /// Target page.
+        page: PageId,
+        /// Sequence to remove.
+        sequence: SequenceId,
+    },
+    /// Change a sequence's offset and local duration.
+    SetSequenceTiming {
+        /// Target page.
+        page: PageId,
+        /// Sequence to change.
+        sequence: SequenceId,
+        /// Start offset relative to the parent clock.
+        offset_ms: u32,
+        /// New local duration.
+        duration_ms: u32,
+    },
+    /// Add or replace a keyframe on a nested sequence.
+    SetSequenceKeyframe {
+        /// Target page.
+        page: PageId,
+        /// Sequence containing the keyframe.
+        sequence: SequenceId,
+        /// Animated node.
+        node: NodeId,
+        /// Animated property.
+        property: Property,
+        /// Time on the sequence's local clock.
+        time_ms: u32,
+        /// Value at that time.
+        value: f64,
+        /// Interpolation towards the next keyframe.
+        #[serde(default)]
+        easing: Easing,
+    },
+    /// Remove a keyframe from a nested sequence.
+    RemoveSequenceKeyframe {
+        /// Target page.
+        page: PageId,
+        /// Sequence containing the keyframe.
+        sequence: SequenceId,
+        /// Animated node.
+        node: NodeId,
+        /// Animated property.
+        property: Property,
+        /// Time on the sequence's local clock.
+        time_ms: u32,
+    },
+    /// Add or replace a path morph keyframe in a nested sequence.
+    SetSequenceMorphKeyframe {
+        /// Target page.
+        page: PageId,
+        /// Sequence containing the keyframe.
+        sequence: SequenceId,
+        /// Animated path node.
+        node: NodeId,
+        /// Time on the sequence's local clock.
+        time_ms: u32,
+        /// Path geometry at that time.
+        path: PathData,
+        /// Interpolation towards the next keyframe.
+        #[serde(default)]
+        easing: Easing,
+    },
+    /// Remove a path morph keyframe from a nested sequence.
+    RemoveSequenceMorphKeyframe {
+        /// Target page.
+        page: PageId,
+        /// Sequence containing the keyframe.
+        sequence: SequenceId,
+        /// Animated path node.
+        node: NodeId,
+        /// Time on the sequence's local clock.
+        time_ms: u32,
+    },
 }
 
 impl Operation {
     /// The `op` tag of every operation, as serialized.
-    pub const NAMES: [&'static str; 9] = [
+    pub const NAMES: [&'static str; 18] = [
         "add_node",
         "delete_node",
         "set_bounds",
@@ -131,7 +246,16 @@ impl Operation {
         "set_opacity",
         "set_keyframe",
         "remove_keyframe",
+        "set_morph_keyframe",
+        "remove_morph_keyframe",
         "set_duration",
+        "add_sequence",
+        "remove_sequence",
+        "set_sequence_timing",
+        "set_sequence_keyframe",
+        "remove_sequence_keyframe",
+        "set_sequence_morph_keyframe",
+        "remove_sequence_morph_keyframe",
     ];
 }
 
@@ -146,6 +270,10 @@ pub enum CommandError {
     UnknownNode(NodeId),
     /// There is no keyframe to remove at that time.
     UnknownKeyframe(NodeId, Property, u32),
+    /// There is no path morph keyframe to remove at that time.
+    UnknownMorphKeyframe(NodeId, u32),
+    /// An operation names a sequence that does not exist.
+    UnknownSequence(SequenceId),
     /// A name or text is too long.
     TextTooLong,
     /// No more node identifiers are available.
@@ -168,6 +296,10 @@ impl fmt::Display for CommandError {
                 "node {} has no {property:?} keyframe at {time} ms",
                 node.0
             ),
+            Self::UnknownMorphKeyframe(node, time) => {
+                write!(f, "node {} has no path morph keyframe at {time} ms", node.0)
+            }
+            Self::UnknownSequence(id) => write!(f, "sequence {} does not exist", id.0),
             Self::TextTooLong => write!(f, "a name or text is too long"),
             Self::OutOfIdentifiers => write!(f, "no more node identifiers are available"),
             Self::Invalid(error) => write!(f, "{error}"),
@@ -306,9 +438,168 @@ impl Document {
                 }
                 affected.push(*node);
             }
+            Operation::SetMorphKeyframe {
+                page,
+                node,
+                time_ms,
+                path,
+                easing,
+            } => {
+                self.node_mut(*page, *node)?;
+                let page = self.page_mut(*page).ok_or(UnknownPage(*page))?;
+                page.animation.set_morph_key(
+                    *node,
+                    MorphKeyframe {
+                        time_ms: *time_ms,
+                        path: path.clone(),
+                        easing: *easing,
+                    },
+                );
+                affected.push(*node);
+            }
+            Operation::RemoveMorphKeyframe {
+                page,
+                node,
+                time_ms,
+            } => {
+                let page = self.page_mut(*page).ok_or(UnknownPage(*page))?;
+                if !page.animation.remove_morph_key(*node, *time_ms) {
+                    return Err(CommandError::UnknownMorphKeyframe(*node, *time_ms));
+                }
+                affected.push(*node);
+            }
             Operation::SetDuration { page, duration_ms } => {
                 let page = self.page_mut(*page).ok_or(UnknownPage(*page))?;
                 page.animation.duration_ms = *duration_ms;
+            }
+            Operation::AddSequence {
+                page,
+                parent,
+                sequence,
+                name,
+                offset_ms,
+                duration_ms,
+            } => {
+                check_text(name, None)?;
+                let page = self.page_mut(*page).ok_or(UnknownPage(*page))?;
+                let sequence = Sequence {
+                    id: *sequence,
+                    name: name.clone(),
+                    offset_ms: *offset_ms,
+                    duration_ms: *duration_ms,
+                    tracks: Vec::new(),
+                    morph_tracks: Vec::new(),
+                    children: Vec::new(),
+                };
+                page.animation
+                    .add_sequence(*parent, sequence)
+                    .map_err(CommandError::UnknownSequence)?;
+            }
+            Operation::RemoveSequence { page, sequence } => {
+                let page = self.page_mut(*page).ok_or(UnknownPage(*page))?;
+                if !page.animation.remove_sequence(*sequence) {
+                    return Err(CommandError::UnknownSequence(*sequence));
+                }
+            }
+            Operation::SetSequenceTiming {
+                page,
+                sequence,
+                offset_ms,
+                duration_ms,
+            } => {
+                let page = self.page_mut(*page).ok_or(UnknownPage(*page))?;
+                let Some(sequence) = page.animation.sequence_mut(*sequence) else {
+                    return Err(CommandError::UnknownSequence(*sequence));
+                };
+                sequence.offset_ms = *offset_ms;
+                sequence.duration_ms = *duration_ms;
+            }
+            Operation::SetSequenceKeyframe {
+                page,
+                sequence,
+                node,
+                property,
+                time_ms,
+                value,
+                easing,
+            } => {
+                self.node_mut(*page, *node)?;
+                let page = self.page_mut(*page).ok_or(UnknownPage(*page))?;
+                if !page.animation.set_sequence_key(
+                    *sequence,
+                    *node,
+                    *property,
+                    Keyframe {
+                        time_ms: *time_ms,
+                        value: *value,
+                        easing: *easing,
+                    },
+                ) {
+                    return Err(CommandError::UnknownSequence(*sequence));
+                }
+                affected.push(*node);
+            }
+            Operation::RemoveSequenceKeyframe {
+                page,
+                sequence,
+                node,
+                property,
+                time_ms,
+            } => {
+                self.node_mut(*page, *node)?;
+                let page = self.page_mut(*page).ok_or(UnknownPage(*page))?;
+                if page.animation.sequence(*sequence).is_none() {
+                    return Err(CommandError::UnknownSequence(*sequence));
+                }
+                if !page
+                    .animation
+                    .remove_sequence_key(*sequence, *node, *property, *time_ms)
+                {
+                    return Err(CommandError::UnknownKeyframe(*node, *property, *time_ms));
+                }
+                affected.push(*node);
+            }
+            Operation::SetSequenceMorphKeyframe {
+                page,
+                sequence,
+                node,
+                time_ms,
+                path,
+                easing,
+            } => {
+                self.node_mut(*page, *node)?;
+                let page = self.page_mut(*page).ok_or(UnknownPage(*page))?;
+                if !page.animation.set_sequence_morph_key(
+                    *sequence,
+                    *node,
+                    MorphKeyframe {
+                        time_ms: *time_ms,
+                        path: path.clone(),
+                        easing: *easing,
+                    },
+                ) {
+                    return Err(CommandError::UnknownSequence(*sequence));
+                }
+                affected.push(*node);
+            }
+            Operation::RemoveSequenceMorphKeyframe {
+                page,
+                sequence,
+                node,
+                time_ms,
+            } => {
+                self.node_mut(*page, *node)?;
+                let page = self.page_mut(*page).ok_or(UnknownPage(*page))?;
+                if page.animation.sequence(*sequence).is_none() {
+                    return Err(CommandError::UnknownSequence(*sequence));
+                }
+                if !page
+                    .animation
+                    .remove_sequence_morph_key(*sequence, *node, *time_ms)
+                {
+                    return Err(CommandError::UnknownMorphKeyframe(*node, *time_ms));
+                }
+                affected.push(*node);
             }
         }
         Ok(())
@@ -348,7 +639,7 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Animation;
+    use crate::{Animation, PathPoint, PathSegment};
 
     const PAGE: PageId = PageId(1);
 
@@ -371,6 +662,21 @@ mod tests {
             time_ms,
             value,
             easing: Easing::Linear,
+        }
+    }
+
+    fn test_path() -> PathData {
+        PathData {
+            start: PathPoint { x: 0.0, y: 0.0 },
+            segments: vec![
+                PathSegment::LineTo {
+                    end: PathPoint { x: 1.0, y: 0.0 },
+                },
+                PathSegment::LineTo {
+                    end: PathPoint { x: 0.0, y: 1.0 },
+                },
+            ],
+            closed: true,
         }
     }
 
@@ -497,6 +803,204 @@ mod tests {
     }
 
     #[test]
+    fn nested_sequence_operations_are_local_atomic_and_removable() {
+        let operations = [
+            add(None, 0.0),
+            Operation::AddSequence {
+                page: PAGE,
+                parent: None,
+                sequence: SequenceId(1),
+                name: "parent".into(),
+                offset_ms: 200,
+                duration_ms: 600,
+            },
+            Operation::AddSequence {
+                page: PAGE,
+                parent: Some(SequenceId(1)),
+                sequence: SequenceId(2),
+                name: "child".into(),
+                offset_ms: 100,
+                duration_ms: 200,
+            },
+            Operation::SetSequenceKeyframe {
+                page: PAGE,
+                sequence: SequenceId(1),
+                node: NodeId(1),
+                property: Property::X,
+                time_ms: 0,
+                value: 0.0,
+                easing: Easing::Linear,
+            },
+            Operation::SetSequenceKeyframe {
+                page: PAGE,
+                sequence: SequenceId(1),
+                node: NodeId(1),
+                property: Property::X,
+                time_ms: 400,
+                value: 100.0,
+                easing: Easing::Linear,
+            },
+            Operation::SetSequenceKeyframe {
+                page: PAGE,
+                sequence: SequenceId(2),
+                node: NodeId(1),
+                property: Property::Y,
+                time_ms: 0,
+                value: 20.0,
+                easing: Easing::Linear,
+            },
+            Operation::SetSequenceKeyframe {
+                page: PAGE,
+                sequence: SequenceId(2),
+                node: NodeId(1),
+                property: Property::Y,
+                time_ms: 200,
+                value: 60.0,
+                easing: Easing::Linear,
+            },
+        ];
+        let source = Document::empty("nested");
+        let (document, _) = source.transact(&operations).expect("valid sequences");
+        assert_eq!(document.pages[0].at_time(400).nodes[0].bounds.x, 50.0);
+        assert_eq!(document.pages[0].at_time(400).nodes[0].bounds.y, 40.0);
+        assert_eq!(document.pages[0].at_time(900).nodes[0].bounds.x, 100.0);
+        assert_eq!(document.pages[0].at_time(900).nodes[0].bounds.y, 60.0);
+        assert_eq!(
+            document.pages[0].animation.next_sequence_id(),
+            Some(SequenceId(3))
+        );
+        assert!(source.pages[0].animation.sequences.is_empty());
+
+        assert!(matches!(
+            document.transact(&[Operation::AddSequence {
+                page: PAGE,
+                parent: Some(SequenceId(1)),
+                sequence: SequenceId(3),
+                name: "outside".into(),
+                offset_ms: 500,
+                duration_ms: 200,
+            }]),
+            Err(CommandError::Invalid(ModelError::InvalidAnimation(..)))
+        ));
+        assert_eq!(
+            document.transact(&[Operation::AddSequence {
+                page: PAGE,
+                parent: Some(SequenceId(999)),
+                sequence: SequenceId(3),
+                name: "orphan".into(),
+                offset_ms: 0,
+                duration_ms: 100,
+            }]),
+            Err(CommandError::UnknownSequence(SequenceId(999)))
+        );
+        assert!(matches!(
+            document.transact(&[Operation::AddSequence {
+                page: PAGE,
+                parent: None,
+                sequence: SequenceId(1),
+                name: "duplicate".into(),
+                offset_ms: 0,
+                duration_ms: 100,
+            }]),
+            Err(CommandError::Invalid(ModelError::InvalidAnimation(..)))
+        ));
+        assert!(matches!(
+            document.transact(&[Operation::SetSequenceKeyframe {
+                page: PAGE,
+                sequence: SequenceId(2),
+                node: NodeId(1),
+                property: Property::Y,
+                time_ms: 201,
+                value: 10.0,
+                easing: Easing::Linear,
+            }]),
+            Err(CommandError::Invalid(ModelError::InvalidAnimation(..)))
+        ));
+        let (deleted_node, _) = document
+            .transact(&[Operation::DeleteNode {
+                page: PAGE,
+                node: NodeId(1),
+            }])
+            .expect("delete sequence target");
+        assert!(
+            deleted_node.pages[0]
+                .animation
+                .sequence(SequenceId(1))
+                .expect("parent sequence")
+                .tracks
+                .is_empty()
+        );
+        assert!(
+            deleted_node.pages[0]
+                .animation
+                .sequence(SequenceId(2))
+                .expect("child sequence")
+                .tracks
+                .is_empty()
+        );
+        let (removed, _) = document
+            .transact(&[Operation::RemoveSequence {
+                page: PAGE,
+                sequence: SequenceId(1),
+            }])
+            .expect("remove parent and child");
+        assert!(removed.pages[0].animation.sequences.is_empty());
+    }
+
+    #[test]
+    fn morph_keyframes_interpolate_and_reject_incompatible_paths_atomically() {
+        let document = Document::empty("morph");
+        let (document, _) = document
+            .transact(&[Operation::AddNode {
+                page: PAGE,
+                parent: None,
+                name: "Path".into(),
+                kind: NodeKind::Path { path: test_path() },
+                bounds: Rect::new(0.0, 0.0, 100.0, 100.0),
+                fill: Some(Color::rgb(10, 20, 30)),
+            }])
+            .expect("path");
+        let mut end_path = test_path();
+        end_path.start.x = 0.2;
+        let (animated, _) = document
+            .transact(&[
+                Operation::SetMorphKeyframe {
+                    page: PAGE,
+                    node: NodeId(1),
+                    time_ms: 0,
+                    path: test_path(),
+                    easing: Easing::Linear,
+                },
+                Operation::SetMorphKeyframe {
+                    page: PAGE,
+                    node: NodeId(1),
+                    time_ms: 1000,
+                    path: end_path.clone(),
+                    easing: Easing::Linear,
+                },
+            ])
+            .expect("compatible morph keys");
+        let NodeKind::Path { path } = &animated.pages[0].at_time(500).nodes[0].kind else {
+            panic!("target remains a path");
+        };
+        assert!((path.start.x - 0.1).abs() < 1e-12);
+
+        end_path.segments.pop();
+        assert!(
+            animated
+                .transact(&[Operation::SetMorphKeyframe {
+                    page: PAGE,
+                    node: NodeId(1),
+                    time_ms: 1000,
+                    path: end_path,
+                    easing: Easing::Linear,
+                }])
+                .is_err()
+        );
+        assert_eq!(animated.pages[0].animation.morph_tracks[0].keys.len(), 2);
+    }
+
+    #[test]
     fn operations_round_trip_through_json_with_stable_names() {
         let operations = vec![
             add(None, 1.0),
@@ -531,9 +1035,69 @@ mod tests {
                 property: Property::Opacity,
                 time_ms: 0,
             },
+            Operation::SetMorphKeyframe {
+                page: PAGE,
+                node: NodeId(1),
+                time_ms: 0,
+                path: test_path(),
+                easing: Easing::EaseOut,
+            },
+            Operation::RemoveMorphKeyframe {
+                page: PAGE,
+                node: NodeId(1),
+                time_ms: 0,
+            },
             Operation::SetDuration {
                 page: PAGE,
                 duration_ms: 10,
+            },
+            Operation::AddSequence {
+                page: PAGE,
+                parent: None,
+                sequence: SequenceId(1),
+                name: "intro".into(),
+                offset_ms: 0,
+                duration_ms: 1000,
+            },
+            Operation::RemoveSequence {
+                page: PAGE,
+                sequence: SequenceId(1),
+            },
+            Operation::SetSequenceTiming {
+                page: PAGE,
+                sequence: SequenceId(1),
+                offset_ms: 100,
+                duration_ms: 500,
+            },
+            Operation::SetSequenceKeyframe {
+                page: PAGE,
+                sequence: SequenceId(1),
+                node: NodeId(1),
+                property: Property::X,
+                time_ms: 0,
+                value: 1.0,
+                easing: Easing::EaseIn,
+            },
+            Operation::RemoveSequenceKeyframe {
+                page: PAGE,
+                sequence: SequenceId(1),
+                node: NodeId(1),
+                property: Property::X,
+                time_ms: 0,
+            },
+            Operation::SetSequenceMorphKeyframe {
+                page: PAGE,
+                sequence: SequenceId(1),
+                node: NodeId(1),
+                time_ms: 0,
+                path: test_path(),
+                easing: Easing::EaseInOut,
+            },
+            Operation::RemoveSequenceMorphKeyframe {
+                page: PAGE,
+                sequence: SequenceId(1),
+                node: NodeId(1),
+                time_ms: 0,
             },
         ];
         let mut names = Vec::new();

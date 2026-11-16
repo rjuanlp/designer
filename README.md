@@ -10,7 +10,8 @@ the vector canvas. Native documents will use **`.dsg`**.
 The Windows GPUI application composites a Vello canvas through shared GPU
 textures. Create documents, draw frames/rectangles/ellipses, select and move
 layers, delete, undo/redo, and save/open `.dsg` files. The timeline supports
-basic keyframe editing and playback with linear or constant interpolation.
+basic keyframe editing and playback with constant, linear, ease-in, ease-out,
+and ease-in-out curves, plus nested sequences that hold their final state.
 The inspector remains read-only. Text rendering, pen editing, recovery,
 advanced animation, and MCP remain unimplemented.
 No 60 FPS result has been established.
@@ -43,6 +44,10 @@ will initially use Spanish UI labels; all public documentation is in English.
 Agents will use the same transactional commands as the interface, live or
 headlessly. There is no developer mode, code generation, cloud collaboration,
 or animation export in scope.
+
+The current animation implementation includes keyframes, easing presets,
+nested sequences, and core path rendering/morph evaluation for matching
+topologies. Path editing and morph-key authoring are not yet exposed in the UI.
 
 Designer is independent of Figma and is not endorsed by it. Original project
 code and documentation are [MIT licensed](LICENSE). Dependencies retain their

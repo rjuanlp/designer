@@ -3,10 +3,10 @@
 //! The display list is pure data, so paint order, visibility and transforms
 //! can be tested without a GPU.
 
-use designer_core::{Color, Node, NodeId, NodeKind, Page, Rect};
+use designer_core::{Color, Node, NodeId, NodeKind, Page, PathData, PathSegment, Rect};
 use vello::{
     Scene,
-    kurbo::{Affine, Ellipse, RoundedRect, Stroke},
+    kurbo::{Affine, BezPath, Ellipse, RoundedRect, Stroke},
     peniko::{self, Fill},
 };
 
@@ -19,7 +19,7 @@ pub mod overlay_tokens {
 }
 
 /// Geometry of one painted item.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Shape {
     /// A rectangle with one corner radius, in document units.
     Rectangle {
@@ -28,10 +28,12 @@ pub enum Shape {
     },
     /// An ellipse inscribed in the item bounds.
     Ellipse,
+    /// A path in normalized item coordinates.
+    Path(PathData),
 }
 
 /// One filled shape in page coordinates.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DrawItem {
     /// The node that produced the item.
     pub node: NodeId,
@@ -76,10 +78,13 @@ impl ViewTransform {
 }
 
 fn shape_of(node: &Node) -> Option<Shape> {
-    match node.kind {
+    match &node.kind {
         NodeKind::Frame => Some(Shape::Rectangle { corner_radius: 0.0 }),
-        NodeKind::Rectangle { corner_radius } => Some(Shape::Rectangle { corner_radius }),
+        NodeKind::Rectangle { corner_radius } => Some(Shape::Rectangle {
+            corner_radius: *corner_radius,
+        }),
         NodeKind::Ellipse => Some(Shape::Ellipse),
+        NodeKind::Path { path } => Some(Shape::Path(path.clone())),
         // Groups paint nothing themselves. Text is not rendered yet.
         NodeKind::Group | NodeKind::Text { .. } => None,
     }
@@ -132,7 +137,7 @@ pub fn absolute_bounds(page: &Page, id: NodeId) -> Option<Rect> {
         .find_map(|node| locate(node, (0.0, 0.0), id))
 }
 
-fn contains(shape: Shape, bounds: Rect, x: f64, y: f64) -> bool {
+fn contains(shape: &Shape, bounds: Rect, x: f64, y: f64) -> bool {
     let inside = x >= bounds.x
         && y >= bounds.y
         && x <= bounds.x + bounds.width
@@ -149,7 +154,70 @@ fn contains(shape: Shape, bounds: Rect, x: f64, y: f64) -> bool {
             let dy = (y - bounds.y - radius_y) / radius_y;
             dx * dx + dy * dy <= 1.0
         }
+        Shape::Path(path) => path_contains(path, bounds, x, y),
     }
+}
+
+fn path_contains(path: &PathData, bounds: Rect, x: f64, y: f64) -> bool {
+    let mut points = vec![(
+        bounds.x + path.start.x * bounds.width,
+        bounds.y + path.start.y * bounds.height,
+    )];
+    let mut current = points[0];
+    for segment in &path.segments {
+        match *segment {
+            PathSegment::LineTo { end } => {
+                current = (
+                    bounds.x + end.x * bounds.width,
+                    bounds.y + end.y * bounds.height,
+                );
+                points.push(current);
+            }
+            PathSegment::CubicTo {
+                control1,
+                control2,
+                end,
+            } => {
+                let control1 = (
+                    bounds.x + control1.x * bounds.width,
+                    bounds.y + control1.y * bounds.height,
+                );
+                let control2 = (
+                    bounds.x + control2.x * bounds.width,
+                    bounds.y + control2.y * bounds.height,
+                );
+                let end = (
+                    bounds.x + end.x * bounds.width,
+                    bounds.y + end.y * bounds.height,
+                );
+                let start = current;
+                for step in 1..=16 {
+                    let t = f64::from(step) / 16.0;
+                    let inverse = 1.0 - t;
+                    points.push((
+                        inverse.powi(3) * start.0
+                            + 3.0 * inverse.powi(2) * t * control1.0
+                            + 3.0 * inverse * t.powi(2) * control2.0
+                            + t.powi(3) * end.0,
+                        inverse.powi(3) * start.1
+                            + 3.0 * inverse.powi(2) * t * control1.1
+                            + 3.0 * inverse * t.powi(2) * control2.1
+                            + t.powi(3) * end.1,
+                    ));
+                }
+                current = end;
+            }
+        }
+    }
+    let mut inside = false;
+    for index in 0..points.len() {
+        let (x1, y1) = points[index];
+        let (x2, y2) = points[(index + 1) % points.len()];
+        if (y1 > y) != (y2 > y) && x < (x2 - x1) * (y - y1) / (y2 - y1) + x1 {
+            inside = !inside;
+        }
+    }
+    inside
 }
 
 fn hit(node: &Node, origin: (f64, f64), x: f64, y: f64) -> Option<NodeId> {
@@ -164,7 +232,7 @@ fn hit(node: &Node, origin: (f64, f64), x: f64, y: f64) -> Option<NodeId> {
         .find_map(|child| hit(child, (bounds.x, bounds.y), x, y))
         .or_else(|| {
             let shape = shape_of(node)?;
-            (node.fill.is_some() && contains(shape, bounds, x, y)).then_some(node.id)
+            (node.fill.is_some() && contains(&shape, bounds, x, y)).then_some(node.id)
         })
 }
 
@@ -262,7 +330,39 @@ pub fn page_scene(page: &Page, view: ViewTransform, selection: Option<NodeId>) -
                     0.0,
                 ),
             ),
+            Shape::Path(path) => scene.fill(
+                Fill::NonZero,
+                transform,
+                color(item.fill),
+                None,
+                &vello_path(&path, item.bounds),
+            ),
         }
+    }
+
+    fn vello_path(path: &PathData, bounds: Rect) -> BezPath {
+        let point = |point: designer_core::PathPoint| {
+            (
+                bounds.x + point.x * bounds.width,
+                bounds.y + point.y * bounds.height,
+            )
+        };
+        let mut result = BezPath::new();
+        result.move_to(point(path.start));
+        for segment in &path.segments {
+            match *segment {
+                PathSegment::LineTo { end } => result.line_to(point(end)),
+                PathSegment::CubicTo {
+                    control1,
+                    control2,
+                    end,
+                } => result.curve_to(point(control1), point(control2), point(end)),
+            }
+        }
+        if path.closed {
+            result.close_path();
+        }
+        result
     }
     if let Some(bounds) = selection.and_then(|id| absolute_bounds(page, id)) {
         // Drawn in target pixels so the outline keeps its width at any zoom.

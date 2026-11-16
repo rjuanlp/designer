@@ -18,6 +18,8 @@ create/draw/save/reopen/undo is implemented. Text, animation UI and MCP in the
 full vertical slice remain pending. See the build log for validation.
 
 Implementation checkpoint **hito 4** (separate from roadmap item 4): basic
-keyframe editing, playback, and persistence are implemented. Curves, nested
-sequences, morphing and interactive states remain pending; this does not
+keyframe editing, playback, preset easing curves, and nested sequences are
+implemented. Core path rendering and same-topology morph evaluation are also
+implemented, but path editing and morph-key authoring remain pending in the UI.
+Direct curve editing and interactive states remain pending; this does not
 complete roadmap item 4. See the build log for validation.

@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::animation::Animation;
 
+/// Maximum number of segments accepted in one path.
+pub const MAX_PATH_SEGMENTS: usize = 512;
+
 /// Identifier of a node, unique within a document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -84,6 +87,139 @@ impl Rect {
     }
 }
 
+/// A point in a path, normalized to its node's bounds.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PathPoint {
+    /// Horizontal coordinate from 0 to 1.
+    pub x: f64,
+    /// Vertical coordinate from 0 to 1.
+    pub y: f64,
+}
+
+impl PathPoint {
+    fn is_valid(self) -> bool {
+        (0.0..=1.0).contains(&self.x) && (0.0..=1.0).contains(&self.y)
+    }
+
+    fn interpolate(self, other: Self, progress: f64) -> Self {
+        Self {
+            x: self.x + (other.x - self.x) * progress,
+            y: self.y + (other.y - self.y) * progress,
+        }
+    }
+}
+
+/// One line or cubic segment following the path's starting point.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "segment", rename_all = "snake_case")]
+pub enum PathSegment {
+    /// Straight line to a point.
+    LineTo {
+        /// End point.
+        end: PathPoint,
+    },
+    /// Cubic Bézier curve.
+    CubicTo {
+        /// First control point.
+        control1: PathPoint,
+        /// Second control point.
+        control2: PathPoint,
+        /// End point.
+        end: PathPoint,
+    },
+}
+
+impl PathSegment {
+    fn is_valid(self) -> bool {
+        match self {
+            Self::LineTo { end } => end.is_valid(),
+            Self::CubicTo {
+                control1,
+                control2,
+                end,
+            } => control1.is_valid() && control2.is_valid() && end.is_valid(),
+        }
+    }
+
+    fn interpolate(self, other: Self, progress: f64) -> Option<Self> {
+        match (self, other) {
+            (Self::LineTo { end: from }, Self::LineTo { end: to }) => Some(Self::LineTo {
+                end: from.interpolate(to, progress),
+            }),
+            (
+                Self::CubicTo {
+                    control1: from1,
+                    control2: from2,
+                    end: from_end,
+                },
+                Self::CubicTo {
+                    control1: to1,
+                    control2: to2,
+                    end: to_end,
+                },
+            ) => Some(Self::CubicTo {
+                control1: from1.interpolate(to1, progress),
+                control2: from2.interpolate(to2, progress),
+                end: from_end.interpolate(to_end, progress),
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// A path in normalized node coordinates.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PathData {
+    /// Starting point.
+    pub start: PathPoint,
+    /// Segments in paint order.
+    pub segments: Vec<PathSegment>,
+    /// Close the final segment to the starting point.
+    pub closed: bool,
+}
+
+impl PathData {
+    /// Whether this path has valid normalized coordinates and bounded size.
+    pub fn is_valid(&self) -> bool {
+        self.start.is_valid()
+            && !self.segments.is_empty()
+            && self.segments.len() <= MAX_PATH_SEGMENTS
+            && self.segments.iter().all(|segment| segment.is_valid())
+    }
+
+    /// Whether another path has the same segment types and closure.
+    pub fn has_same_topology(&self, other: &Self) -> bool {
+        self.closed == other.closed
+            && self.segments.len() == other.segments.len()
+            && self.segments.iter().zip(&other.segments).all(|(from, to)| {
+                matches!(
+                    (from, to),
+                    (PathSegment::LineTo { .. }, PathSegment::LineTo { .. })
+                        | (PathSegment::CubicTo { .. }, PathSegment::CubicTo { .. })
+                )
+            })
+    }
+
+    /// Interpolate between matching paths.
+    pub fn interpolate(&self, other: &Self, progress: f64) -> Option<Self> {
+        if !self.has_same_topology(other) {
+            return None;
+        }
+        let progress = progress.clamp(0.0, 1.0);
+        Some(Self {
+            start: self.start.interpolate(other.start, progress),
+            segments: self
+                .segments
+                .iter()
+                .copied()
+                .zip(other.segments.iter().copied())
+                .map(|(from, to)| from.interpolate(to, progress))
+                .collect::<Option<Vec<_>>>()?,
+            closed: self.closed,
+        })
+    }
+}
+
 /// What a node is.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -99,6 +235,11 @@ pub enum NodeKind {
     },
     /// An ellipse inscribed in the node bounds.
     Ellipse,
+    /// A filled vector path in normalized node coordinates.
+    Path {
+        /// Path geometry.
+        path: PathData,
+    },
     /// A text layer. Text is stored but not rendered yet.
     Text {
         /// The text content.
@@ -223,8 +364,12 @@ impl Node {
             }
             _ => true,
         };
+        let path_valid = match &self.kind {
+            NodeKind::Path { path } => path.is_valid(),
+            _ => true,
+        };
         let opacity_valid = self.opacity.is_finite() && (0.0..=1.0).contains(&self.opacity);
-        if !self.bounds.is_valid() || !radius_valid || !opacity_valid {
+        if !self.bounds.is_valid() || !radius_valid || !path_valid || !opacity_valid {
             return Err(ModelError::InvalidGeometry(self.id));
         }
         self.children
@@ -292,8 +437,12 @@ impl Document {
                 .iter()
                 .try_for_each(|node| node.validate(&mut nodes))?;
             let on_page = |id: NodeId| nodes.contains(&id) && !before.contains(&id);
+            let path_of = |id: NodeId| match &page.node(id)?.kind {
+                NodeKind::Path { path } => Some(path.clone()),
+                _ => None,
+            };
             page.animation
-                .validate(on_page)
+                .validate(on_page, path_of)
                 .map_err(|reason| ModelError::InvalidAnimation(page.id, reason))?;
         }
         if nodes.iter().any(|id| id.0 >= self.next_node_id) {

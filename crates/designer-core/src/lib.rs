@@ -12,8 +12,12 @@ mod model;
 mod sample;
 
 pub use animation::{
-    Animation, Easing, Keyframe, MAX_DURATION_MS, MAX_KEYS_PER_TRACK, Property, Track,
+    Animation, Easing, Keyframe, MAX_DURATION_MS, MAX_KEYS_PER_TRACK, MAX_SEQUENCE_DEPTH,
+    MAX_SEQUENCES, MorphKeyframe, MorphTrack, Property, Sequence, SequenceId, Track,
 };
 pub use command::{CommandError, MAX_NAME_CHARS, MAX_OPERATIONS, MAX_TEXT_CHARS, Operation};
-pub use model::{Color, Document, ModelError, Node, NodeId, NodeKind, Page, PageId, Rect};
+pub use model::{
+    Color, Document, MAX_PATH_SEGMENTS, ModelError, Node, NodeId, NodeKind, Page, PageId, PathData,
+    PathPoint, PathSegment, Rect,
+};
 pub use sample::sample_document;

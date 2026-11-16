@@ -2,13 +2,14 @@
 
 use std::time::Instant;
 
-use designer_core::{Easing, Node, Property};
+use designer_core::{Easing, Node, Property, SequenceId};
 
 pub(crate) struct Timeline {
     pub time_ms: u32,
     pub preview: bool,
     pub property: Property,
     pub easing: Easing,
+    pub active_sequence: Option<SequenceId>,
     playing: Option<(Instant, u32)>,
 }
 
@@ -19,6 +20,7 @@ impl Default for Timeline {
             preview: false,
             property: Property::X,
             easing: Easing::Linear,
+            active_sequence: None,
             playing: None,
         }
     }

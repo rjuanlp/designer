@@ -138,6 +138,7 @@ pub fn kind_label(kind: &NodeKind) -> &'static str {
         NodeKind::Group => "Grupo",
         NodeKind::Rectangle { .. } => "Rectángulo",
         NodeKind::Ellipse => "Elipse",
+        NodeKind::Path { .. } => "Trazado",
         NodeKind::Text { .. } => "Texto",
     }
 }
@@ -187,11 +188,17 @@ pub const VALUE_LESS: &str = "− Valor";
 pub const VALUE_MORE: &str = "+ Valor";
 pub const LINEAR: &str = "Lineal";
 pub const CONSTANT: &str = "Constante";
+pub const EASE_IN: &str = "Entrada suave";
+pub const EASE_OUT: &str = "Salida suave";
+pub const EASE_IN_OUT: &str = "Entrada/salida suave";
 pub const ANIMATION_SELECT: &str = "Selecciona una capa para crear claves.";
 pub const ANIMATION_HINT: &str =
     "Claves de la propiedad seleccionada. Mayús: ajuste fino del valor.";
 pub const ANIMATION_EDIT_HINT: &str =
     "Previsualizando animación. Usa Editar base para dibujar o mover capas.";
+pub const MAIN_SEQUENCE: &str = "Principal";
+pub const ADD_SEQUENCE: &str = "Añadir secuencia";
+pub const REMOVE_SEQUENCE: &str = "Quitar secuencia";
 
 pub fn property_label(property: designer_core::Property) -> &'static str {
     use designer_core::Property;
@@ -216,6 +223,18 @@ pub fn animation_value(name: &str, value: f64) -> String {
 pub fn key_label(time: u32, value: f64) -> String {
     format!("◆ {time} ms · {value:.2}")
 }
+
+pub fn easing_label(easing: designer_core::Easing) -> &'static str {
+    use designer_core::Easing;
+    match easing {
+        Easing::Constant => CONSTANT,
+        Easing::Linear => LINEAR,
+        Easing::EaseIn => EASE_IN,
+        Easing::EaseOut => EASE_OUT,
+        Easing::EaseInOut => EASE_IN_OUT,
+    }
+}
+
 pub const TOOL_PENDING: &str = "Las herramientas Texto y Pluma todavía no crean capas.";
 pub const UNDO: &str = "Deshacer";
 pub const REDO: &str = "Rehacer";

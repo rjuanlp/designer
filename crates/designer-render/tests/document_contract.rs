@@ -1,6 +1,7 @@
 //! Display-list contract tests. They need no GPU.
 use designer_core::{
-    Animation, Color, Node, NodeId, NodeKind, Page, PageId, Rect, sample_document,
+    Animation, Color, Node, NodeId, NodeKind, Page, PageId, PathData, PathPoint, PathSegment, Rect,
+    sample_document,
 };
 use designer_render::document::{
     Shape, ViewTransform, absolute_bounds, content_bounds, display_list, fit_view, page_scene,
@@ -190,6 +191,37 @@ fn hit_testing_returns_the_topmost_painted_unlocked_node() {
     page.nodes[0].fill = None;
     assert_eq!(hit_test(&page, 105.0, 105.0), None);
     assert_eq!(hit_test(&page, 120.0, 120.0), Some(NodeId(2)));
+}
+
+#[test]
+fn paths_render_and_hit_test_only_inside_their_fill() {
+    use designer_render::document::hit_test;
+
+    let triangle = PathData {
+        start: PathPoint { x: 0.5, y: 0.0 },
+        segments: vec![
+            PathSegment::LineTo {
+                end: PathPoint { x: 1.0, y: 1.0 },
+            },
+            PathSegment::LineTo {
+                end: PathPoint { x: 0.0, y: 1.0 },
+            },
+        ],
+        closed: true,
+    };
+    let page = page(vec![node(
+        1,
+        NodeKind::Path { path: triangle },
+        Rect::new(0.0, 0.0, 100.0, 100.0),
+        vec![],
+    )]);
+
+    let items = display_list(&page);
+    assert_eq!(items.len(), 1);
+    assert!(matches!(&items[0].shape, Shape::Path(_)));
+    assert_eq!(hit_test(&page, 50.0, 80.0), Some(NodeId(1)));
+    assert_eq!(hit_test(&page, 5.0, 5.0), None);
+    let _ = page_scene(&page, ViewTransform::IDENTITY, None);
 }
 
 #[test]

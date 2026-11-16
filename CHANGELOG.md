@@ -21,5 +21,11 @@
 - Keep the status row fixed so command messages do not shift the canvas during drags.
 - Add basic timeline playback, keyframe editing, duration controls, and
   linear/constant interpolation with undo/redo and `.dsg` persistence.
+- Add ease-in, ease-out and ease-in-out interpolation presets with a timeline
+  curve preview.
+- Add nested animation sequences with local clocks, one-shot playback, and
+  held end states.
+- Add normalized line/cubic path geometry, rendering, hit testing, and
+  same-topology morph keyframes on page and sequence timelines.
 
 There is no released editor binary.

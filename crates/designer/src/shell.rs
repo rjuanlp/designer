@@ -318,6 +318,13 @@ impl Shell {
         if !exists {
             self.selection = None;
         }
+        if self.animation.active_sequence.is_some_and(|id| {
+            !self
+                .current_page()
+                .is_some_and(|page| page.animation.sequence(id).is_some())
+        }) {
+            self.animation.active_sequence = None;
+        }
         self.redraw(cx);
     }
 

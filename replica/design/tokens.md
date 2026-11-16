@@ -15,4 +15,5 @@ The application shell keeps its tokens in `crates/designer/src/theme.rs`:
 
 Components must not embed raw visual constants. Geometry and colors authored by
 users, including the sample document, are document data, not UI theme tokens.
-Motion durations are not defined yet because the shell has no animation.
+Timeline playback uses document-authored durations. Interface transition and
+microinteraction durations are not defined yet.
