@@ -29,5 +29,12 @@
   same-topology morph keyframes on page and sequence timelines.
 - Write the updated `.dsg` path/morph schema as version 2 while continuing to
   read version 1 documents.
+- Write the interactive prototype-state model as `.dsg` schema version 3 while
+  retaining readers for versions 1 and 2.
+- Add hover/click prototype states and a transition preview in S05.
+- Add a structured Figma JSON importer with explicit loss reports and safe
+  handling of unsupported or over-limit content.
+- Add a headless `designer-mcp` stdio server with revision-checked atomic
+  transactions, save/import/history tools and evaluated still snapshots.
 
 There is no released editor binary.

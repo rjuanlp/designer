@@ -5,7 +5,7 @@
 
 use crate::{
     Animation, Color, Document, Node, NodeId, NodeKind, Page, PageId, PathData, PathPoint,
-    PathSegment, Rect,
+    PathSegment, Prototype, Rect,
 };
 
 const CANVAS: Color = Color::rgb(30, 31, 36);
@@ -217,6 +217,7 @@ pub fn sample_document() -> Document {
                 background: CANVAS,
                 nodes: vec![screen, palette],
                 animation: Animation::default(),
+                prototype: Prototype::default(),
             },
             Page {
                 id: PageId(2),
@@ -224,6 +225,7 @@ pub fn sample_document() -> Document {
                 background: CANVAS,
                 nodes: Vec::new(),
                 animation: Animation::default(),
+                prototype: Prototype::default(),
             },
         ],
         next_node_id: ids.0 + 1,

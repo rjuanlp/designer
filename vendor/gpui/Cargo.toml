@@ -111,6 +111,9 @@ path = "tests/action_macros.rs"
 [dependencies.anyhow]
 version = "1.0.86"
 
+[dependencies.accesskit]
+version = "=0.25.2"
+
 [dependencies.async-task]
 version = "4.7"
 
@@ -540,6 +543,9 @@ features = ["wgsl-in"]
 
 [target.'cfg(target_os = "windows")'.dependencies.flume]
 version = "0.11"
+
+[target.'cfg(target_os = "windows")'.dependencies.accesskit_windows]
+version = "=0.35.2"
 
 [target.'cfg(target_os = "windows")'.dependencies.rand]
 version = "0.9"

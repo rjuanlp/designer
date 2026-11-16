@@ -829,6 +829,7 @@ mod tests {
                 children: Vec::new(),
             }],
             animation: Animation::default(),
+            prototype: crate::Prototype::default(),
         }
     }
 

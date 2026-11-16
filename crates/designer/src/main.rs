@@ -3,18 +3,22 @@
 //! Navigation, panels, themes and a Vello canvas on which frames, rectangles
 //! and ellipses can be drawn, moved and deleted, with undo/redo and `.dsg`
 //! files. The timeline supports basic keyframe editing and playback. Property
-//! editing, text and MCP are not implemented yet.
+//! editing, text entry and live GUI-to-MCP sharing are not implemented yet;
+//! `designer-mcp` runs a separate headless document session.
 //!
 //! Launch options, mainly for capturing interface states:
 //! `--size 1440x900`, `--screen documents|design|components|preview|import|preferences`,
 //! `--page N` (zero-based), `--select NODE_ID`, `--panel layers|canvas|inspector`,
 //! `--timeline`, `--light`, `--open FILE.dsg`.
 
+mod prototype_preview;
 mod strings;
 mod theme;
 #[cfg(any(windows, test))]
 mod timeline;
 
+#[cfg(windows)]
+mod bridge;
 #[cfg(windows)]
 mod canvas;
 #[cfg(windows)]

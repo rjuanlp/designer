@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use designer_core::{CommandError, Document, NodeId, Operation};
+use designer_core::{CommandError, Document, ModelError, NodeId, Operation};
 
 use crate::dsg::{self, DsgError};
 
@@ -105,6 +105,26 @@ impl Session {
         Ok(affected)
     }
 
+    /// Replace the document as one undoable change.
+    pub fn replace_document(&mut self, document: Document) -> Result<(), ModelError> {
+        document.validate()?;
+        if document == self.current.document {
+            return Ok(());
+        }
+        let next = State {
+            id: self.next_state_id,
+            document,
+        };
+        self.next_state_id += 1;
+        self.undo.push(std::mem::replace(&mut self.current, next));
+        if self.undo.len() > MAX_HISTORY {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+        self.revision += 1;
+        Ok(())
+    }
+
     /// Go back one transaction. Returns whether anything changed.
     pub fn undo(&mut self) -> bool {
         let Some(previous) = self.undo.pop() else {
@@ -200,6 +220,28 @@ mod tests {
         assert_eq!(session.document(), &before);
         assert_eq!(session.revision(), revision);
         assert!(session.undo() && !session.undo());
+    }
+
+    #[test]
+    fn replacing_a_document_is_validated_atomic_and_undoable() {
+        let mut session = Session::new(Document::empty("before"));
+        session
+            .replace_document(Document::empty("after"))
+            .expect("valid replacement");
+        assert_eq!(session.document().name, "after");
+        assert_eq!(session.revision(), 1);
+        assert!(session.undo());
+        assert_eq!(session.document().name, "before");
+        assert!(session.redo());
+        assert_eq!(session.document().name, "after");
+
+        let before = session.document().clone();
+        let revision = session.revision();
+        let mut invalid = Document::empty("invalid");
+        invalid.pages.clear();
+        assert!(session.replace_document(invalid).is_err());
+        assert_eq!(session.document(), &before);
+        assert_eq!(session.revision(), revision);
     }
 
     #[test]

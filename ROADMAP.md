@@ -24,3 +24,12 @@ same-topology morph evaluation are also implemented, but path editing,
 morph-key authoring and direct curve editing remain pending in the UI. Hito 4
 and roadmap item 4 therefore remain partial; interactive states are tracked in
 roadmap item 5. See the build log for validation.
+
+Implementation checkpoint **hito 5** is in progress on `codex/hito-5`.
+Interactive prototype states, structured JSON import and a headless stdio MCP
+server are implemented and covered by targeted tests. The remaining
+accessibility and live MCP work will target Windows first and be validated
+there; portability to other platforms is a follow-up after the Windows path is
+working. Do not treat roadmap item 5 as complete or merge until screen-reader
+semantics, shared live GUI/MCP state, cross-process coordination and visual
+validation are resolved.

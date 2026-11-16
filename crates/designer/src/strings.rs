@@ -51,12 +51,9 @@ impl Screen {
     /// What the section will do, shown while it is not implemented.
     pub fn pending_description(self) -> &'static str {
         match self {
-            Self::Documents | Self::Design | Self::Preferences => "",
+            Self::Documents | Self::Design | Self::Preview | Self::Preferences => "",
             Self::Components => {
                 "Aquí vivirán los componentes, las variantes y los estilos locales del documento."
-            }
-            Self::Preview => {
-                "Aquí se probarán los estados y las transiciones interactivas del diseño."
             }
             Self::Import => {
                 "Aquí se importarán paquetes de datos estructurados y se mostrará el informe de pérdidas."
@@ -200,6 +197,51 @@ pub const ANIMATION_EDIT_HINT: &str =
 pub const MAIN_SEQUENCE: &str = "Principal";
 pub const ADD_SEQUENCE: &str = "Añadir secuencia";
 pub const REMOVE_SEQUENCE: &str = "Quitar secuencia";
+pub const PREVIEW_HELP: &str =
+    "Prueba los estados sobre el lienzo. Selecciona una capa en Diseño para crear interacciones.";
+pub const PROTOTYPE_STATES: &str = "Estados interactivos";
+pub const CREATE_HOVER_STATE: &str = "Crear estado al pasar";
+pub const CREATE_CLICK_STATE: &str = "Crear estado al pulsar";
+pub const NO_PROTOTYPE_STATES: &str = "Añade un estado desde una capa seleccionada.";
+pub const SELECTED_LAYER: &str = "Capa seleccionada";
+pub const NO_SELECTED_LAYER: &str = "Ninguna";
+pub const PROTOTYPE_LAYERS: &str = "Capas para interacción";
+pub const PREVIEW_INITIAL: &str = "Inicial";
+pub const PREVIEW_SELECT_NODE: &str = "Selecciona una capa en el panel para crear su interacción.";
+pub const PROTOTYPE_STATE_LIMIT: &str = "No se pueden crear más estados en esta página.";
+pub const PROTOTYPE_TRIGGER_EXISTS: &str =
+    "Esta capa ya tiene una interacción para ese disparador desde el estado inicial.";
+pub const PROTOTYPE_STATE_CREATED: &str = "Se añadió el estado interactivo.";
+pub const PROTOTYPE_STATE_REMOVED: &str = "Se quitó el estado interactivo.";
+pub const REMOVE_PROTOTYPE_STATE: &str = "Quitar estado activo";
+pub const IMPORT_DESCRIPTION: &str =
+    "Carga JSON estructurado de Figma. Revisa las pérdidas antes de abrirlo como documento.";
+pub const IMPORT_PICK_FILE: &str = "Elegir archivo JSON";
+pub const IMPORT_APPLY: &str = "Abrir como documento";
+pub const IMPORT_LOADING: &str = "Leyendo y validando el archivo…";
+pub const IMPORT_NO_RESULT: &str = "Selecciona un archivo JSON estructurado para empezar.";
+pub const IMPORT_REPORT: &str = "Informe de migración";
+pub const IMPORT_WARNINGS: &str = "Elementos que requieren revisión";
+pub const IMPORT_NO_WARNINGS: &str = "No se detectaron pérdidas en los elementos importados.";
+pub fn import_more_warnings(count: usize) -> String {
+    format!("Se muestran los primeros 100 de {count} avisos.")
+}
+
+pub fn import_omitted_warnings(count: usize) -> String {
+    format!("No se muestran los detalles de otros {count} avisos por el límite del informe.")
+}
+
+pub fn import_summary(nodes: usize, warnings: usize) -> String {
+    format!("{nodes} capas preparadas · {warnings} avisos")
+}
+
+pub fn import_applied(nodes: usize, warnings: usize) -> String {
+    format!("Documento importado: {nodes} capas · {warnings} avisos")
+}
+
+pub fn import_failed(error: &dyn Display) -> String {
+    format!("No se pudo importar el archivo. Detalle: {error}")
+}
 
 pub fn property_label(property: designer_core::Property) -> &'static str {
     use designer_core::Property;
@@ -239,6 +281,7 @@ pub fn easing_label(easing: designer_core::Easing) -> &'static str {
 pub const TOOL_PENDING: &str = "Las herramientas Texto y Pluma todavía no crean capas.";
 pub const UNDO: &str = "Deshacer";
 pub const REDO: &str = "Rehacer";
+pub const DELETE_SELECTION: &str = "Eliminar capa seleccionada";
 pub const SAVE: &str = "Guardar";
 
 pub const CANVAS_UNAVAILABLE: &str = "No se puede mostrar el lienzo";
@@ -296,7 +339,13 @@ pub const GRAPHICS: &str = "Gráficos";
 pub const GRAPHICS_ADAPTER: &str = "Adaptador";
 pub const GRAPHICS_UNAVAILABLE: &str = "No disponible";
 pub const AGENTS: &str = "Agentes";
-pub const AGENTS_PENDING: &str = "La conexión con agentes (MCP) todavía no está implementada.";
+pub const AGENTS_PENDING: &str =
+    "Los clientes MCP locales pueden conectarse a la sesión abierta de Designer.";
+pub const MCP_UPDATED: &str = "El documento se actualizó desde un cliente MCP.";
+
+pub fn mcp_server_failed(error: &dyn Display) -> String {
+    format!("No se pudo iniciar el puente MCP local. Detalle: {error}")
+}
 pub const SHORTCUTS: &str = "Atajos";
 pub const SHORTCUT_LIST: [(&str, &str); 11] = [
     ("Ctrl+N", "Nuevo documento"),
@@ -334,7 +383,7 @@ mod tests {
         for screen in Screen::ALL {
             let implemented = matches!(
                 screen,
-                Screen::Documents | Screen::Design | Screen::Preferences
+                Screen::Documents | Screen::Design | Screen::Preview | Screen::Preferences
             );
             assert_eq!(screen.pending_description().is_empty(), implemented);
         }

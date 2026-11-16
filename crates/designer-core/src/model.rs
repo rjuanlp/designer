@@ -4,7 +4,7 @@ use std::{collections::HashSet, error::Error, fmt};
 
 use serde::{Deserialize, Serialize};
 
-use crate::animation::Animation;
+use crate::{animation::Animation, prototype::Prototype};
 
 /// Maximum number of segments accepted in one path.
 pub const MAX_PATH_SEGMENTS: usize = 512;
@@ -289,6 +289,9 @@ pub struct Page {
     pub nodes: Vec<Node>,
     /// Keyframe animation of this page.
     pub animation: Animation,
+    /// Interactive states and triggers for this page.
+    #[serde(default)]
+    pub prototype: Prototype,
 }
 
 /// A design document.
@@ -318,6 +321,8 @@ pub enum ModelError {
     StaleNextNodeId,
     /// The animation of a page is inconsistent.
     InvalidAnimation(PageId, String),
+    /// The prototype of a page is inconsistent.
+    InvalidPrototype(PageId, String),
 }
 
 impl fmt::Display for ModelError {
@@ -330,6 +335,9 @@ impl fmt::Display for ModelError {
             Self::StaleNextNodeId => write!(f, "next_node_id is already in use"),
             Self::InvalidAnimation(id, reason) => {
                 write!(f, "page {} has an invalid animation: {reason}", id.0)
+            }
+            Self::InvalidPrototype(id, reason) => {
+                write!(f, "page {} has an invalid prototype: {reason}", id.0)
             }
         }
     }
@@ -421,6 +429,7 @@ impl Document {
                 background: Color::rgb(30, 31, 36),
                 nodes: Vec::new(),
                 animation: Animation::default(),
+                prototype: Prototype::default(),
             }],
             next_node_id: 1,
         }
@@ -459,6 +468,19 @@ impl Document {
             page.animation
                 .validate(on_page, path_of)
                 .map_err(|reason| ModelError::InvalidAnimation(page.id, reason))?;
+            page.prototype
+                .validate(on_page)
+                .map_err(|reason| ModelError::InvalidPrototype(page.id, reason))?;
+            for state in &page.prototype.states {
+                let state_page = page
+                    .in_prototype_state(state.id)
+                    .expect("validated state exists");
+                let mut state_nodes = HashSet::new();
+                state_page
+                    .nodes
+                    .iter()
+                    .try_for_each(|node| node.validate(&mut state_nodes, (0.0, 0.0)))?;
+            }
         }
         if nodes.iter().any(|id| id.0 >= self.next_node_id) {
             return Err(ModelError::StaleNextNodeId);
@@ -494,6 +516,7 @@ mod tests {
                 background: Color::rgb(0, 0, 0),
                 nodes,
                 animation: Animation::default(),
+                prototype: Prototype::default(),
             }],
             next_node_id: 100,
         }

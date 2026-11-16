@@ -3,7 +3,10 @@
 
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 
-use designer_core::{Document, sample_document};
+use designer_core::{
+    DEFAULT_PROTOTYPE_DURATION_MS, Document, Easing, FillOverride, INITIAL_STATE, NodeOverride,
+    PrototypeState, PrototypeStateId, PrototypeTransition, PrototypeTrigger, Rect, sample_document,
+};
 use designer_engine::dsg::{self, DsgError};
 use zip::{ZipWriter, write::SimpleFileOptions};
 
@@ -57,7 +60,7 @@ fn the_sample_document_round_trips_with_stable_identifiers() {
 }
 
 #[test]
-fn writer_marks_the_path_and_morph_schema_as_version_two() {
+fn writer_marks_the_interactive_prototype_schema_as_version_three() {
     let bytes = dsg::to_bytes(&sample_document()).expect("writes");
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("archive");
     let mut manifest = String::new();
@@ -67,7 +70,61 @@ fn writer_marks_the_path_and_morph_schema_as_version_two() {
         .read_to_string(&mut manifest)
         .expect("manifest text");
     let manifest: serde_json::Value = serde_json::from_str(&manifest).expect("manifest json");
-    assert_eq!(manifest["schema_version"], 2);
+    assert_eq!(manifest["schema_version"], 3);
+}
+
+#[test]
+fn non_empty_interactive_states_round_trip_without_losing_transition_data() {
+    let mut document = sample_document();
+    let page = &mut document.pages[0];
+    let node = page.nodes[0].id;
+    page.prototype.states.push(PrototypeState {
+        id: PrototypeStateId(1),
+        name: "Hover".to_owned(),
+        overrides: vec![NodeOverride {
+            node,
+            bounds: Some(Rect::new(12.0, 15.0, 140.0, 42.0)),
+            fill: Some(FillOverride::Clear),
+            opacity: Some(0.75),
+            visible: Some(false),
+        }],
+    });
+    page.prototype.transitions.push(PrototypeTransition {
+        node,
+        from: INITIAL_STATE,
+        trigger: PrototypeTrigger::Click,
+        to: PrototypeStateId(1),
+        duration_ms: DEFAULT_PROTOTYPE_DURATION_MS,
+        easing: Easing::EaseOut,
+    });
+
+    let bytes = dsg::to_bytes(&document).expect("writes");
+    assert_eq!(dsg::from_bytes(&bytes).expect("reads"), document);
+}
+
+#[test]
+fn version_two_documents_without_prototype_fields_remain_readable() {
+    let document = Document::empty("legacy v2");
+    let mut legacy_json = serde_json::to_value(&document).expect("document json");
+    let pages = legacy_json["pages"].as_array_mut().expect("pages");
+    for page in pages {
+        page.as_object_mut()
+            .expect("page object")
+            .remove("prototype");
+    }
+    let legacy_json = serde_json::to_vec(&legacy_json).expect("legacy json");
+    let bytes = archive(&[
+        (
+            "manifest.json",
+            br#"{"format":"designer-dsg","schema_version":2}"#,
+        ),
+        ("document.json", &legacy_json),
+    ]);
+
+    assert_eq!(
+        dsg::from_bytes(&bytes).expect("reads version two"),
+        document
+    );
 }
 
 #[test]
@@ -163,13 +220,13 @@ fn damaged_and_foreign_files_are_refused() {
     let future = archive(&[
         (
             "manifest.json",
-            br#"{"format":"designer-dsg","schema_version":3}"#,
+            br#"{"format":"designer-dsg","schema_version":4}"#,
         ),
         ("document.json", &good),
     ]);
     assert!(matches!(
         dsg::from_bytes(&future),
-        Err(DsgError::UnsupportedVersion(3))
+        Err(DsgError::UnsupportedVersion(4))
     ));
 }
 

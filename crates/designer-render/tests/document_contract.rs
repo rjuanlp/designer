@@ -1,7 +1,7 @@
 //! Display-list contract tests. They need no GPU.
 use designer_core::{
     Animation, Color, Easing, Keyframe, Node, NodeId, NodeKind, Page, PageId, PathData, PathPoint,
-    PathSegment, Property, Rect, Track, sample_document,
+    PathSegment, Property, Prototype, Rect, Track, sample_document,
 };
 use designer_render::document::{
     Shape, ViewTransform, absolute_bounds, content_bounds, display_list, fit_view, page_scene,
@@ -28,6 +28,7 @@ fn page(nodes: Vec<Node>) -> Page {
         background: Color::rgb(0, 0, 0),
         nodes,
         animation: Animation::default(),
+        prototype: Prototype::default(),
     }
 }
 

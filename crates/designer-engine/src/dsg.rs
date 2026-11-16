@@ -22,7 +22,7 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter, result::ZipError, write::Sim
 /// Value of `format` in the manifest.
 pub const FORMAT: &str = "designer-dsg";
 /// Newest schema version this build reads and writes.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 /// File extension, without the dot.
 pub const EXTENSION: &str = "dsg";
 /// Largest accepted `.dsg` file.

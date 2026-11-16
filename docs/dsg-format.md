@@ -1,11 +1,11 @@
-# DSG format — current v2 subset
+# DSG format — current v3 subset
 
 The engine reads and writes ZIP archives containing UTF-8 `manifest.json`
 and `document.json`. The manifest has `format: "designer-dsg"`,
-`schema_version: 2` and a generator string. Document IDs survive save/open.
-The reader remains compatible with version 1 documents; new writes use version
-2 for path geometry and morph-track data. Documents are validated before
-writing and before becoming active state.
+`schema_version: 3` and a generator string. Document IDs survive save/open.
+The reader remains compatible with versions 1 and 2; new writes use version 3
+for interactive prototype states and transitions. Documents are validated
+before writing and before becoming active state.
 
 The reader rejects malformed ZIP/JSON, missing entries, unsafe archive paths,
 invalid model values and future schema versions. Limits: 256 MiB for an on-disk
