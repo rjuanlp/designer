@@ -2,7 +2,8 @@
 //!
 //! Navigation, panels, themes and a Vello canvas on which frames, rectangles
 //! and ellipses can be drawn, moved and deleted, with undo/redo and `.dsg`
-//! files. Property editing, text, animation and MCP are not implemented yet.
+//! files. The timeline supports basic keyframe editing and playback. Property
+//! editing, text and MCP are not implemented yet.
 //!
 //! Launch options, mainly for capturing interface states:
 //! `--size 1440x900`, `--screen documents|design|components|preview|import|preferences`,
@@ -11,6 +12,8 @@
 
 mod strings;
 mod theme;
+#[cfg(any(windows, test))]
+mod timeline;
 
 #[cfg(windows)]
 mod canvas;

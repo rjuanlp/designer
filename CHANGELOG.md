@@ -19,5 +19,7 @@
 - Add validated `.dsg` save/open and native file dialogs with unsaved-change prompts.
 - Add frame/rectangle/ellipse drawing, hit testing, moving and deleting layers.
 - Keep the status row fixed so command messages do not shift the canvas during drags.
+- Add basic timeline playback, keyframe editing, duration controls, and
+  linear/constant interpolation with undo/redo and `.dsg` persistence.
 
 There is no released editor binary.

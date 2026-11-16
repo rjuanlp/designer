@@ -16,3 +16,8 @@ code generation, animation export or binary .fig compatibility is planned.
 Implementation checkpoint **hito 3** (separate from roadmap item 3): basic
 create/draw/save/reopen/undo is implemented. Text, animation UI and MCP in the
 full vertical slice remain pending. See the build log for validation.
+
+Implementation checkpoint **hito 4** (separate from roadmap item 4): basic
+keyframe editing, playback, and persistence are implemented. Curves, nested
+sequences, morphing and interactive states remain pending; this does not
+complete roadmap item 4. See the build log for validation.

@@ -70,7 +70,7 @@ pub mod metrics {
     /// Width of the inspector panel.
     pub const INSPECTOR_WIDTH: f32 = 264.0;
     /// Height of the expanded timeline, including its header.
-    pub const TIMELINE_HEIGHT: f32 = 200.0;
+    pub const TIMELINE_HEIGHT: f32 = 292.0;
     /// Height of a list row and of a control.
     pub const ROW_HEIGHT: f32 = 28.0;
     /// Indentation per tree level.

@@ -1,5 +1,7 @@
 //! The application shell: navigation, the design workspace and its panels.
 
+mod timeline_view;
+
 use std::{
     cell::RefCell,
     path::{Path, PathBuf},
@@ -191,6 +193,7 @@ pub struct Shell {
     screen: Screen,
     tool: Tool,
     timeline_open: bool,
+    animation: crate::timeline::Timeline,
     dark: bool,
     narrow_panel: NarrowPanel,
     canvas: Rc<RefCell<CanvasHost>>,
@@ -234,6 +237,7 @@ impl Shell {
             screen: options.screen,
             tool: Tool::Move,
             timeline_open: options.timeline,
+            animation: crate::timeline::Timeline::default(),
             dark: !options.light,
             narrow_panel: options.panel,
             canvas: Rc::new(RefCell::new(CanvasHost::new())),
@@ -286,6 +290,7 @@ impl Shell {
     }
 
     fn replace_session(&mut self, session: Session, cx: &mut Context<Self>) {
+        self.animation = crate::timeline::Timeline::default();
         self.page = session
             .document()
             .pages
@@ -303,6 +308,7 @@ impl Shell {
 
     /// Drop a selection that no longer exists, as after undo.
     fn settle(&mut self, cx: &mut Context<Self>) {
+        self.animation.pause();
         self.drag = None;
         self.preview = None;
         let exists = self.selection.is_some_and(|id| {
@@ -520,6 +526,12 @@ impl Shell {
     ) {
         // Keyboard shortcuts act on the canvas after a click on it.
         window.focus(&self.focus);
+        if self.animation.preview {
+            self.animation.pause();
+            self.status = Some(strings::ANIMATION_EDIT_HINT.into());
+            cx.notify();
+            return;
+        }
         let Some(point) = self.pointer(event.position) else {
             return;
         };
@@ -593,7 +605,11 @@ impl Shell {
 
     fn toggle_timeline(&mut self, _: &ToggleTimeline, _: &mut Window, cx: &mut Context<Self>) {
         self.timeline_open = !self.timeline_open;
-        cx.notify();
+        if !self.timeline_open {
+            self.animation.pause();
+            self.animation.preview = false;
+        }
+        self.redraw(cx);
     }
 
     fn toggle_theme(&mut self, _: &ToggleTheme, _: &mut Window, cx: &mut Context<Self>) {
@@ -841,6 +857,7 @@ impl Shell {
                     .mx(px(metrics::SPACE_XS))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.page = id;
+                        this.animation = crate::timeline::Timeline::default();
                         this.selection = None;
                         this.drag = None;
                         this.preview = None;
@@ -1064,6 +1081,11 @@ impl Shell {
         let Some(page) = self.current_page().cloned() else {
             return panel;
         };
+        let page = if self.animation.preview {
+            page.at_time(self.animation.time_ms)
+        } else {
+            page
+        };
         let empty = page.nodes.is_empty();
         let selection = self.shown_selection();
         let (generation, view_epoch) = (self.generation, self.view_epoch);
@@ -1146,23 +1168,14 @@ impl Shell {
                     .child(div().px(px(metrics::SPACE_XS)).child(strings::TIMELINE))
                     .child(
                         button("timeline-toggle", label, palette, false).on_click(cx.listener(
-                            |this, _, _, cx| {
-                                this.timeline_open = !this.timeline_open;
-                                cx.notify();
+                            |this, _, window, cx| {
+                                this.toggle_timeline(&ToggleTimeline, window, cx);
                             },
                         )),
                     ),
             )
             .when(self.timeline_open, |this| {
-                this.child(
-                    div()
-                        .flex()
-                        .flex_1()
-                        .items_center()
-                        .justify_center()
-                        .p(px(metrics::SPACE_M))
-                        .child(muted(strings::NO_ANIMATIONS, palette)),
-                )
+                this.child(self.timeline_editor(palette, cx))
             })
     }
 
@@ -1376,6 +1389,22 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.screen != Screen::Design || !self.timeline_open {
+            self.animation.pause();
+        }
+        let duration = self
+            .session
+            .document()
+            .page(self.page)
+            .map_or(2000, |page| page.animation.duration_ms);
+        let previous_time = self.animation.time_ms;
+        self.animation.tick(std::time::Instant::now(), duration);
+        if previous_time != self.animation.time_ms {
+            self.generation += 1;
+        }
+        if self.animation.is_playing() {
+            window.request_animation_frame();
+        }
         let title = format!("{} — {}", self.title(), strings::APP_NAME);
         if title != self.window_title {
             window.set_window_title(&title);

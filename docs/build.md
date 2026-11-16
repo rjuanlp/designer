@@ -54,6 +54,11 @@ Keyboard: Tab and Shift+Tab move focus, Enter or Space activates the focused
 control. Ctrl+S saves, Ctrl+Shift+S saves as, Ctrl+O opens, Ctrl+Z undoes,
 Ctrl+Y or Ctrl+Shift+Z redoes, Escape cancels a drag. Ctrl+T toggles the timeline and Ctrl+Shift+L switches theme.
 
+In the timeline, select a layer and property, seek to a time, then add or
+adjust a keyframe. Playback loops for the page duration; keys support linear
+or constant interpolation. `Editar base` returns the canvas to its unanimated
+values. Advanced curves, nested sequences, and morphing are not implemented.
+
 ## Troubleshooting
 
 - `link.exe` missing: install the C++ workload, not only the Visual Studio installer.

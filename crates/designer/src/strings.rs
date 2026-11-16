@@ -172,6 +172,50 @@ pub const TIMELINE: &str = "Línea de tiempo";
 pub const SHOW_TIMELINE: &str = "Mostrar línea de tiempo";
 pub const HIDE_TIMELINE: &str = "Ocultar línea de tiempo";
 pub const NO_ANIMATIONS: &str = "Este documento todavía no tiene animaciones.";
+pub const PLAY: &str = "Reproducir";
+pub const PAUSE: &str = "Pausar";
+pub const BASE_VALUES: &str = "Editar base";
+pub const TIME_BACK: &str = "−100 ms";
+pub const TIME_FORWARD: &str = "+100 ms";
+pub const DURATION: &str = "Duración";
+pub const DURATION_LESS: &str = "−500 ms";
+pub const DURATION_MORE: &str = "+500 ms";
+pub const ADD_KEY: &str = "Añadir clave";
+pub const REPLACE_KEY: &str = "Actualizar clave";
+pub const REMOVE_KEY: &str = "Quitar clave";
+pub const VALUE_LESS: &str = "− Valor";
+pub const VALUE_MORE: &str = "+ Valor";
+pub const LINEAR: &str = "Lineal";
+pub const CONSTANT: &str = "Constante";
+pub const ANIMATION_SELECT: &str = "Selecciona una capa para crear claves.";
+pub const ANIMATION_HINT: &str =
+    "Claves de la propiedad seleccionada. Mayús: ajuste fino del valor.";
+pub const ANIMATION_EDIT_HINT: &str =
+    "Previsualizando animación. Usa Editar base para dibujar o mover capas.";
+
+pub fn property_label(property: designer_core::Property) -> &'static str {
+    use designer_core::Property;
+    match property {
+        Property::X => POSITION_X,
+        Property::Y => POSITION_Y,
+        Property::Width => WIDTH,
+        Property::Height => HEIGHT,
+        Property::Opacity => OPACITY,
+    }
+}
+
+pub fn milliseconds(time: u32) -> String {
+    format!("{time} ms")
+}
+pub fn animation_time(time: u32, duration: u32) -> String {
+    format!("{time} / {duration} ms")
+}
+pub fn animation_value(name: &str, value: f64) -> String {
+    format!("{name}: {value:.2}")
+}
+pub fn key_label(time: u32, value: f64) -> String {
+    format!("◆ {time} ms · {value:.2}")
+}
 pub const TOOL_PENDING: &str = "Las herramientas Texto y Pluma todavía no crean capas.";
 pub const UNDO: &str = "Deshacer";
 pub const REDO: &str = "Rehacer";

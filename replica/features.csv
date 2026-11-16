@@ -6,13 +6,13 @@ F004,S01,DSG persistence and recovery,partial,Validated ZIP/JSON save and open w
 F016,S02,Application shell and navigation,partial,Six sections with Spanish labels; light/dark themes; wide and narrow (below 760 px) layouts; verified by screenshots at 1440 and 390 px on one machine; 100% scale only
 F017,S02,Layers canvas and properties,partial,Editable shapes and hit testing; inspector remains read-only; no text rendering or frame clipping
 F018,S02,Keyboard navigation and focus ring,partial,Tab/Shift+Tab/Enter and two shortcuts checked by injected keys; no screen-reader support; no arrow-key navigation in lists
-F019,S04,Timeline panel,partial,Collapsible empty placeholder only; no keys or playback
+F019,S04,Timeline panel,partial,Collapsible timeline with keyframe editing, seeking, and playback; advanced curves and sequence editing pending
 F020,S07,Preferences,partial,Theme switch and GPU adapter name; nothing is persisted; agents section is a placeholder
 F005,S02,Vector editing and history,partial,Frame rectangle ellipse creation and movement plus deletion and bounded undo/redo; pen and advanced editing pending
 F006,S02,Typography and images,no,Planned
 F007,S02,Auto layout and constraints,no,Planned
 F008,S03,Components variants and styles,no,Planned
-F009,S04,Keyframe timeline and curves,no,Planned
+F009,S04,Keyframe timeline and curves,partial,Basic keyframes and playback with linear or constant interpolation; no visual curve editor
 F010,S04,Morphing and nested sequences,no,Planned
 F011,S05,Interactive states,no,Planned
 F012,S06,Figma structured import,no,Migration guide draft only

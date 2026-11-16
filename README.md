@@ -9,9 +9,10 @@ the vector canvas. Native documents will use **`.dsg`**.
 **Pre-alpha: basic shape editing and local document files. No release yet.**
 The Windows GPUI application composites a Vello canvas through shared GPU
 textures. Create documents, draw frames/rectangles/ellipses, select and move
-layers, delete, undo/redo, and save/open `.dsg` files. The inspector remains
-read-only. Text rendering, pen editing, recovery, animation UI and MCP remain
-unimplemented. The timeline is a placeholder.
+layers, delete, undo/redo, and save/open `.dsg` files. The timeline supports
+basic keyframe editing and playback with linear or constant interpolation.
+The inspector remains read-only. Text rendering, pen editing, recovery,
+advanced animation, and MCP remain unimplemented.
 No 60 FPS result has been established.
 
 ![Application shell with the sample document](replica/clone-screens/S02-wide-dark.png)
