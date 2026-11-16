@@ -9,8 +9,9 @@ use std::{
     time::Instant,
 };
 
-use accesskit::{Action as A11yAction, ActionRequest, Node as A11yNode, NodeId as A11yNodeId};
-use accesskit::{Rect as A11yRect, Role as A11yRole, TreeId, TreeInfo, TreeUpdate};
+use crate::accessibility::*;
+use accesskit::{Action as A11yAction, ActionRequest, NodeId as A11yNodeId};
+use accesskit::{Rect as A11yRect, TreeUpdate};
 use designer_core::{
     Color, DEFAULT_PROTOTYPE_DURATION_MS, Document, Easing, FillOverride, INITIAL_STATE,
     MAX_PROTOTYPE_STATES, Node, NodeId, NodeKind, NodeOverride, Operation, Page, PageId,
@@ -78,15 +79,6 @@ const SHAPE_FILL: Color = Color::rgb(196, 196, 196);
 const FRAME_FILL: Color = Color::rgb(255, 255, 255);
 /// Size of a shape created by a click without a drag, in document units.
 const CLICK_SIZE: f64 = 100.0;
-const A11Y_NAV_GROUP: u64 = 100;
-const A11Y_CONTENT_GROUP: u64 = 101;
-const A11Y_STATUS_NODE: u64 = 102;
-const A11Y_LAYER_LIST: u64 = 103;
-const A11Y_TOOLBAR_GROUP: u64 = 104;
-const A11Y_NAV_BASE: u64 = 1_000;
-const A11Y_TOOL_BASE: u64 = 2_000;
-const A11Y_COMMAND_BASE: u64 = 3_000;
-const A11Y_LAYER_BASE: u64 = 1 << 32;
 
 /// A pointer drag on the canvas, in page coordinates.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -203,6 +195,9 @@ pub struct Shell {
     /// session document.
     preview: Option<Document>,
     drag: Option<Drag>,
+    prompt_pending: bool,
+    a11y_focus: A11yNodeId,
+    a11y_cache: Option<TreeUpdate>,
     /// Changes whenever the canvas content or the selection changes.
     generation: u64,
     /// Changes whenever the canvas view must be fitted again.
@@ -229,7 +224,7 @@ pub struct Shell {
 impl Shell {
     /// Create the shell with the document named on the command line, or the
     /// built-in sample document.
-    pub fn new(options: &LaunchOptions, cx: &mut Context<Self>) -> Self {
+    pub fn new(options: &LaunchOptions, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut status = None;
         let session = match &options.open {
             Some(path) => Session::open(path).unwrap_or_else(|error| {
@@ -273,11 +268,11 @@ impl Shell {
         .detach();
         let (accessibility_sender, mut accessibility_receiver) =
             tokio::sync::mpsc::unbounded_channel();
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             while let Some(action) = accessibility_receiver.recv().await {
-                if let Err(error) =
-                    this.update(cx, |this, cx| this.handle_accessibility_action(action, cx))
-                {
+                if let Err(error) = this.update_in(cx, |this, window, cx| {
+                    this.handle_accessibility_action(action, window, cx)
+                }) {
                     eprintln!("Screen-reader action could not reach Designer: {error}");
                     break;
                 }
@@ -288,6 +283,9 @@ impl Shell {
             session,
             preview: None,
             drag: None,
+            prompt_pending: false,
+            a11y_focus: A11yNodeId(0),
+            a11y_cache: None,
             generation: 0,
             view_epoch: 0,
             status,
@@ -361,7 +359,7 @@ impl Shell {
             .pages
             .first()
             .map_or(PageId(0), |page| page.id);
-        self.session = session;
+        self.session = session.succeeding(&self.session);
         if let Some(page) = self.session.document().page(self.page) {
             self.prototype_preview = PrototypePreview::new(page);
         }
@@ -386,8 +384,19 @@ impl Shell {
         );
         let changes_session = !matches!(
             &request,
-            SessionRequest::ReadDocument | SessionRequest::RenderSnapshot { .. }
+            SessionRequest::ReadDocument
+                | SessionRequest::DescribeCapabilities
+                | SessionRequest::RenderSnapshot { .. }
         );
+        if changes_session && (self.drag.is_some() || self.prompt_pending) {
+            return SessionReply::Error {
+                error: concat!(
+                    "Designer is busy with a canvas drag or unsaved-changes prompt; ",
+                    "finish it before retrying"
+                )
+                .into(),
+            };
+        }
         match execute_session_request(&mut self.session, request) {
             Ok(result) => {
                 if changes_session {
@@ -414,47 +423,98 @@ impl Shell {
         }
     }
 
-    fn handle_accessibility_action(&mut self, request: ActionRequest, cx: &mut Context<Self>) {
+    fn handle_accessibility_action(
+        &mut self,
+        request: ActionRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.a11y_cache.as_ref().is_some_and(|tree| {
+            tree.nodes.iter().any(|(id, node)| {
+                *id == request.target_node && node.supports_action(request.action)
+            })
+        }) {
+            return;
+        }
+        self.a11y_focus = request.target_node;
+        if request.action == A11yAction::Focus {
+            cx.notify();
+            return;
+        }
         if request.action != A11yAction::Click {
             return;
         }
         let target = request.target_node.0;
+        match target {
+            A11Y_NEW => {
+                self.guarded(Pending::New, window, cx);
+                return;
+            }
+            A11Y_OPEN => {
+                self.guarded(Pending::Open, window, cx);
+                return;
+            }
+            A11Y_SAVE_AS => {
+                self.save_as(cx);
+                return;
+            }
+            A11Y_SAMPLE => {
+                self.guarded(Pending::Sample, window, cx);
+                return;
+            }
+            A11Y_TIMELINE => {
+                self.toggle_timeline(&ToggleTimeline, window, cx);
+                return;
+            }
+            A11Y_PLAY => {
+                self.play_animation(cx);
+                return;
+            }
+            A11Y_HOVER => {
+                self.create_prototype_state(PrototypeTrigger::Hover, cx);
+                return;
+            }
+            A11Y_CLICK => {
+                self.create_prototype_state(PrototypeTrigger::Click, cx);
+                return;
+            }
+            A11Y_REMOVE_STATE => {
+                self.remove_prototype_state(self.prototype_preview.state(), cx);
+                return;
+            }
+            A11Y_IMPORT_PICK => {
+                self.open_import(cx);
+                return;
+            }
+            A11Y_IMPORT_APPLY => {
+                self.apply_import(window, cx);
+                return;
+            }
+            A11Y_THEME => {
+                self.toggle_theme(&ToggleTheme, window, cx);
+                return;
+            }
+            A11Y_PANEL_BASE..=A11Y_PANEL_LAST => {
+                self.select_panel(NarrowPanel::ALL[(target - A11Y_PANEL_BASE) as usize], cx);
+                return;
+            }
+            _ => {}
+        }
+        if let Some(id) = target.checked_sub(A11Y_STATE_BASE) {
+            self.select_prototype_state(PrototypeStateId(id), cx);
+            return;
+        }
         if (A11Y_NAV_BASE..A11Y_NAV_BASE + Screen::ALL.len() as u64).contains(&target) {
             let screen = Screen::ALL[(target - A11Y_NAV_BASE) as usize];
-            if screen == Screen::Preview {
-                self.reset_prototype_preview();
-            }
-            self.drag = None;
-            self.preview = None;
-            self.screen = screen;
-            self.redraw(cx);
+            self.select_screen(screen, cx);
         } else if (A11Y_TOOL_BASE..A11Y_TOOL_BASE + Tool::ALL.len() as u64).contains(&target) {
-            self.tool = Tool::ALL[(target - A11Y_TOOL_BASE) as usize];
-            self.drag = None;
-            self.preview = None;
-            self.redraw(cx);
-        } else if target == A11Y_COMMAND_BASE + 1 {
-            if self.session.undo() {
-                self.status = None;
-            }
-            self.settle(cx);
-        } else if target == A11Y_COMMAND_BASE + 2 {
-            if self.session.redo() {
-                self.status = None;
-            }
-            self.settle(cx);
-        } else if target == A11Y_COMMAND_BASE + 3 {
-            if let Some(node) = self.selection {
-                self.status = self
-                    .session
-                    .apply(&[Operation::DeleteNode {
-                        page: self.page,
-                        node,
-                    }])
-                    .err()
-                    .map(|error| strings::change_failed(&error).into());
-                self.settle(cx);
-            }
+            self.select_tool(Tool::ALL[(target - A11Y_TOOL_BASE) as usize], cx);
+        } else if target == A11Y_UNDO {
+            self.undo(&Undo, window, cx);
+        } else if target == A11Y_REDO {
+            self.redo(&Redo, window, cx);
+        } else if target == A11Y_DELETE {
+            self.delete_selection(&DeleteSelection, window, cx);
         } else if let Some(id) = target
             .checked_sub(A11Y_LAYER_BASE)
             .map(NodeId)
@@ -463,15 +523,34 @@ impl Shell {
                     .is_some_and(|page| page.node(*id).is_some())
             })
         {
-            self.screen = Screen::Design;
-            self.selection = Some(id);
-            self.redraw(cx);
+            self.select_layer(id, cx);
         }
     }
 
     fn accessibility_tree(&self, window: &Window) -> TreeUpdate {
         let bounds = window.bounds();
         build_accessibility_tree(A11ySnapshot {
+            dark: self.dark,
+            timeline: self.timeline_open,
+            playing: self.animation.is_playing(),
+            time_ms: self.animation.time_ms,
+            can_play: self
+                .current_page()
+                .is_some_and(|p| timeline_view::has_tracks(&p.animation)),
+            narrow: layout_mode(f32::from(window.bounds().size.width)) == LayoutMode::Narrow,
+            panel: self.narrow_panel,
+            prototype_state: self.prototype_preview.state(),
+            can_import: self.import_preview.is_some(),
+            import_summary: self
+                .import_preview
+                .as_ref()
+                .map(|r| &r.report)
+                .or(self.import_report.as_ref())
+                .map_or_else(
+                    || strings::IMPORT_NO_RESULT.to_owned(),
+                    |r| strings::import_summary(r.imported_nodes, import_warning_count(r)),
+                ),
+            focus: self.a11y_focus,
             screen: self.screen,
             tool: self.tool,
             selection: self.selection,
@@ -515,6 +594,7 @@ impl Shell {
     }
 
     fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(A11Y_UNDO);
         if self.session.undo() {
             self.status = None;
         }
@@ -522,6 +602,7 @@ impl Shell {
     }
 
     fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(A11Y_REDO);
         if self.session.redo() {
             self.status = None;
         }
@@ -529,6 +610,7 @@ impl Shell {
     }
 
     fn delete_selection(&mut self, _: &DeleteSelection, _: &mut Window, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(A11Y_DELETE);
         let Some(node) = self.selection else {
             return;
         };
@@ -563,6 +645,7 @@ impl Shell {
     }
 
     fn save_as(&mut self, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(A11Y_SAVE_AS);
         let (directory, name) = match self.session.path() {
             Some(path) => (
                 path.parent().map(Path::to_owned),
@@ -683,7 +766,7 @@ impl Shell {
     }
 
     fn open_path(&mut self, path: &Path, cx: &mut Context<Self>) {
-        match Session::open(path) {
+        match self.session.reopen(path) {
             Ok(session) => {
                 self.status = None;
                 self.replace_session(session, cx);
@@ -727,6 +810,7 @@ impl Shell {
         if !self.session.is_dirty() {
             return self.perform(pending, window, cx);
         }
+        self.prompt_pending = true;
         let answer = window.prompt(
             PromptLevel::Warning,
             strings::UNSAVED_TITLE,
@@ -735,7 +819,9 @@ impl Shell {
             cx,
         );
         cx.spawn_in(window, async move |this, cx| {
-            if answer.await == Ok(0) {
+            let answer = answer.await;
+            this.update(cx, |this, _| this.prompt_pending = false).ok();
+            if answer == Ok(0) {
                 this.update_in(cx, |this, window, cx| this.perform(pending, window, cx))
                     .ok();
             } else if pending == Pending::Import {
@@ -1067,7 +1153,77 @@ impl Shell {
         self.redraw(cx);
     }
 
+    fn select_screen(&mut self, screen: Screen, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(
+            A11Y_NAV_BASE + Screen::ALL.iter().position(|s| *s == screen).unwrap_or(0) as u64,
+        );
+        if screen == Screen::Preview {
+            self.reset_prototype_preview();
+        }
+        self.drag = None;
+        self.preview = None;
+        self.screen = screen;
+        self.redraw(cx);
+    }
+    fn select_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(
+            A11Y_TOOL_BASE + Tool::ALL.iter().position(|t| *t == tool).unwrap_or(0) as u64,
+        );
+        self.tool = tool;
+        self.drag = None;
+        self.preview = None;
+        self.redraw(cx);
+    }
+    fn select_layer(&mut self, id: NodeId, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(A11Y_LAYER_BASE.saturating_add(id.0));
+        self.selection = Some(id);
+        self.redraw(cx);
+    }
+    fn select_panel(&mut self, panel: NarrowPanel, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(
+            A11Y_PANEL_BASE
+                + NarrowPanel::ALL
+                    .iter()
+                    .position(|p| *p == panel)
+                    .unwrap_or(0) as u64,
+        );
+        self.narrow_panel = panel;
+        cx.notify();
+    }
+    fn set_theme(&mut self, dark: bool, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(A11Y_THEME);
+        self.dark = dark;
+        cx.notify();
+    }
+    fn apply_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(A11Y_IMPORT_APPLY);
+        if let Some(imported) = self.import_preview.take() {
+            self.import_report = Some(imported.report.clone());
+            self.pending_import = Some(imported);
+            self.guarded(Pending::Import, window, cx);
+        }
+    }
+    fn select_prototype_state(&mut self, id: PrototypeStateId, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(A11Y_STATE_BASE.saturating_add(id.0));
+        if let Some(page) = self.session.document().page(self.page)
+            && page.prototype.state(id).is_some()
+        {
+            self.prototype_preview.select_state(page, id);
+            self.redraw(cx);
+        }
+    }
+    fn play_animation(&mut self, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(A11Y_PLAY);
+        if let Some(page) = self.current_page() {
+            let duration = page.animation.duration_ms;
+            self.drag = None;
+            self.preview = None;
+            self.animation.toggle_play(Instant::now(), duration);
+            self.redraw(cx);
+        }
+    }
     fn toggle_timeline(&mut self, _: &ToggleTimeline, _: &mut Window, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(A11Y_TIMELINE);
         self.timeline_open = !self.timeline_open;
         if !self.timeline_open {
             self.animation.pause();
@@ -1077,8 +1233,7 @@ impl Shell {
     }
 
     fn toggle_theme(&mut self, _: &ToggleTheme, _: &mut Window, cx: &mut Context<Self>) {
-        self.dark = !self.dark;
-        cx.notify();
+        self.set_theme(!self.dark, cx);
     }
 
     fn focus_next(&mut self, _: &FocusNext, window: &mut Window, _: &mut Context<Self>) {
@@ -1179,138 +1334,6 @@ pub fn format_number(value: f64) -> String {
     }
 }
 
-/// The interface state the screen-reader tree is derived from.
-struct A11ySnapshot<'a> {
-    screen: Screen,
-    tool: Tool,
-    selection: Option<NodeId>,
-    page: Option<&'a Page>,
-    can_undo: bool,
-    can_redo: bool,
-    status: Option<&'a str>,
-    title: String,
-    bounds: A11yRect,
-}
-
-fn build_accessibility_tree(snapshot: A11ySnapshot<'_>) -> TreeUpdate {
-    let A11ySnapshot {
-        screen,
-        tool,
-        selection,
-        page,
-        can_undo,
-        can_redo,
-        status,
-        title,
-        bounds,
-    } = snapshot;
-    let mut nodes = Vec::new();
-    let root_children = vec![A11yNodeId(A11Y_NAV_GROUP), A11yNodeId(A11Y_CONTENT_GROUP)];
-
-    let mut navigation = A11yNode::new(A11yRole::TabList);
-    let mut navigation_children = Vec::new();
-    for (index, item) in Screen::ALL.into_iter().enumerate() {
-        let id = A11Y_NAV_BASE + index as u64;
-        let mut node = A11yNode::new(A11yRole::Tab);
-        node.set_label(item.label());
-        if screen == item {
-            node.set_selected(true);
-        }
-        node.add_action(A11yAction::Click);
-        navigation_children.push(A11yNodeId(id));
-        nodes.push((A11yNodeId(id), node));
-    }
-    navigation.set_label("Secciones");
-    navigation.set_children(navigation_children);
-    nodes.push((A11yNodeId(A11Y_NAV_GROUP), navigation));
-
-    let mut content = A11yNode::new(A11yRole::Group);
-    content.set_label(screen.label());
-    let mut content_children = Vec::new();
-    if screen == Screen::Design {
-        let toolbar_id = A11yNodeId(A11Y_TOOLBAR_GROUP);
-        let mut toolbar = A11yNode::new(A11yRole::Toolbar);
-        let mut toolbar_children = Vec::new();
-        for (index, item) in Tool::ALL.into_iter().enumerate() {
-            let id = A11Y_TOOL_BASE + index as u64;
-            let mut node = A11yNode::new(A11yRole::Button);
-            node.set_label(item.label());
-            if tool == item {
-                node.set_selected(true);
-            }
-            node.add_action(A11yAction::Click);
-            toolbar_children.push(A11yNodeId(id));
-            nodes.push((A11yNodeId(id), node));
-        }
-
-        for (offset, label, enabled) in [
-            (1, strings::UNDO, can_undo),
-            (2, strings::REDO, can_redo),
-            (3, strings::DELETE_SELECTION, selection.is_some()),
-        ] {
-            let id = A11Y_COMMAND_BASE + offset;
-            let mut node = A11yNode::new(A11yRole::Button);
-            node.set_label(label);
-            if enabled {
-                node.add_action(A11yAction::Click);
-            } else {
-                node.set_disabled();
-            }
-            toolbar_children.push(A11yNodeId(id));
-            nodes.push((A11yNodeId(id), node));
-        }
-        toolbar.set_label("Herramientas y acciones");
-        toolbar.set_children(toolbar_children);
-        content_children.push(toolbar_id);
-        nodes.push((toolbar_id, toolbar));
-
-        let mut layer_children = Vec::new();
-        if let Some(page) = page {
-            let mut rows = Vec::new();
-            flatten(&page.nodes, 0, &mut rows);
-            for (depth, layer) in rows {
-                let Some(id) = A11Y_LAYER_BASE.checked_add(layer.id.0) else {
-                    continue;
-                };
-                let mut node = A11yNode::new(A11yRole::ListItem);
-                node.set_label(format!("{}, capa de nivel {}", layer.name, depth + 1));
-                if selection == Some(layer.id) {
-                    node.set_selected(true);
-                }
-                node.add_action(A11yAction::Click);
-                layer_children.push(A11yNodeId(id));
-                nodes.push((A11yNodeId(id), node));
-            }
-        }
-        let mut layers = A11yNode::new(A11yRole::List);
-        layers.set_label("Capas");
-        layers.set_children(layer_children);
-        content_children.push(A11yNodeId(A11Y_LAYER_LIST));
-        nodes.push((A11yNodeId(A11Y_LAYER_LIST), layers));
-    }
-    if let Some(status) = status {
-        let mut status_node = A11yNode::new(A11yRole::Status);
-        status_node.set_label(status);
-        status_node.set_live(accesskit::Live::Polite);
-        content_children.push(A11yNodeId(A11Y_STATUS_NODE));
-        nodes.push((A11yNodeId(A11Y_STATUS_NODE), status_node));
-    }
-    content.set_children(content_children);
-    nodes.push((A11yNodeId(A11Y_CONTENT_GROUP), content));
-
-    let mut root = A11yNode::new(A11yRole::Window);
-    root.set_label(title);
-    root.set_children(root_children);
-    root.set_bounds(bounds);
-    nodes.push((A11yNodeId(0), root));
-    TreeUpdate {
-        nodes,
-        tree: Some(TreeInfo::new(A11yNodeId(0))),
-        tree_id: TreeId::ROOT,
-        focus: A11yNodeId(0),
-    }
-}
-
 fn flatten<'a>(nodes: &'a [Node], depth: usize, rows: &mut Vec<(usize, &'a Node)>) {
     // Topmost layer first, as painted last.
     for node in nodes.iter().rev() {
@@ -1358,13 +1381,7 @@ impl Shell {
                     self.screen == screen,
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    if screen == Screen::Preview {
-                        this.reset_prototype_preview();
-                    }
-                    this.drag = None;
-                    this.preview = None;
-                    this.screen = screen;
-                    this.redraw(cx);
+                    this.select_screen(screen, cx);
                 }))
             }))
     }
@@ -1385,10 +1402,7 @@ impl Shell {
             .children(Tool::ALL.into_iter().enumerate().map(|(index, tool)| {
                 button(("tool", index), tool.label(), palette, self.tool == tool).on_click(
                     cx.listener(move |this, _, _, cx| {
-                        this.tool = tool;
-                        this.drag = None;
-                        this.preview = None;
-                        this.redraw(cx);
+                        this.select_tool(tool, cx);
                     }),
                 )
             }))
@@ -1537,8 +1551,7 @@ impl Shell {
             .when(!node.visible, |this| this.child(state(strings::HIDDEN)))
             .when(node.locked, |this| this.child(state(strings::LOCKED)))
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.selection = Some(id);
-                this.redraw(cx);
+                this.select_layer(id, cx);
             }))
             .into_any_element()
     }
@@ -1846,8 +1859,7 @@ impl Shell {
                                 )
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
-                                        this.narrow_panel = panel;
-                                        cx.notify();
+                                        this.select_panel(panel, cx);
                                     },
                                 ))
                             },
@@ -1991,11 +2003,7 @@ impl Shell {
                         can_apply,
                         palette,
                         cx.listener(|this, _, window, cx| {
-                            if let Some(imported) = this.import_preview.take() {
-                                this.import_report = Some(imported.report.clone());
-                                this.pending_import = Some(imported);
-                                this.guarded(Pending::Import, window, cx);
-                            }
+                            this.apply_import(window, cx);
                         }),
                     )),
             )
@@ -2067,10 +2075,7 @@ impl Shell {
                     self.prototype_preview.state() == id,
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(page) = this.session.document().page(this.page) {
-                        this.prototype_preview.select_state(page, id);
-                        this.redraw(cx);
-                    }
+                    this.select_prototype_state(id, cx);
                 }))
             });
         let selected = self
@@ -2092,8 +2097,7 @@ impl Shell {
                         self.selection == Some(id),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.selection = Some(id);
-                        cx.notify();
+                        this.select_layer(id, cx);
                     }))
                 }),
             )
@@ -2217,8 +2221,7 @@ impl Shell {
                             .map(|(index, (label, dark))| {
                                 button(("theme", index), label, palette, self.dark == dark)
                                     .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.dark = dark;
-                                        cx.notify();
+                                        this.set_theme(dark, cx);
                                     }))
                             }),
                     ),
@@ -2254,7 +2257,11 @@ impl Render for Shell {
                 eprintln!("Screen-reader action channel is closed");
             }
         });
-        window.update_accessibility_tree(self.accessibility_tree(window));
+        let tree = self.accessibility_tree(window);
+        if self.a11y_cache.as_ref() != Some(&tree) {
+            self.a11y_cache = Some(tree.clone());
+            window.update_accessibility_tree(tree);
+        }
         if self.screen != Screen::Design || !self.timeline_open {
             self.animation.pause();
         }

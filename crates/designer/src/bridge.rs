@@ -37,6 +37,7 @@ fn start_pipe_server_at(
         .spawn(move || {
             let runtime = match tokio::runtime::Builder::new_current_thread()
                 .enable_io()
+                .enable_time()
                 .build()
             {
                 Ok(runtime) => runtime,
@@ -64,15 +65,28 @@ async fn run_pipe_server(
 ) -> io::Result<()> {
     let mut server = ServerOptions::new()
         .first_pipe_instance(true)
-        .create(&pipe_name)?;
+        .reject_remote_clients(true)
+        .create(&pipe_name)
+        .inspect_err(|error| {
+            let _ = ready.send(Err(format!("create live MCP pipe: {error}")));
+        })?;
     let _ = ready.send(Ok(()));
+    let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(8));
     loop {
+        let permit = permits
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(io::Error::other)?;
         server.connect().await?;
-        let next = ServerOptions::new().create(&pipe_name)?;
+        let next = ServerOptions::new()
+            .reject_remote_clients(true)
+            .create(&pipe_name)?;
         let connected = server;
         server = next;
         let requests = requests.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             if let Err(error) = handle_client(connected, requests).await {
                 eprintln!("Designer MCP pipe request failed: {error}");
             }
@@ -87,7 +101,9 @@ async fn handle_client(
     let (reader, mut writer) = tokio::io::split(pipe);
     let mut reader = BufReader::new(reader).take(MAX_REQUEST_BYTES + 1);
     let mut line = Vec::new();
-    let bytes = reader.read_until(b'\n', &mut line).await?;
+    let bytes = tokio::time::timeout(Duration::from_secs(10), reader.read_until(b'\n', &mut line))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "session request read timed out"))??;
     let reply = if bytes == 0 || bytes as u64 > MAX_REQUEST_BYTES {
         SessionReply::Error {
             error: "empty or oversized session request".into(),
@@ -147,6 +163,11 @@ mod tests {
         let pipe_name = format!(r"\\.\pipe\designer-session-test-{}", std::process::id());
         let (sender, mut requests) = async_mpsc::unbounded_channel();
         start_pipe_server_at(sender, pipe_name.clone()).expect("server starts");
+        let (second_sender, _) = async_mpsc::unbounded_channel();
+        let error = start_pipe_server_at(second_sender, pipe_name.clone())
+            .expect_err("second GUI reports a startup error");
+        assert!(error.contains("create live MCP pipe:"), "{error}");
+        assert!(!error.contains("sending half is closed"));
 
         let client_pipe = pipe_name.clone();
         let client = thread::spawn(move || {

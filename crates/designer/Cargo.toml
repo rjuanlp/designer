@@ -23,4 +23,4 @@ pollster.workspace = true
 anyhow.workspace = true
 log = "0.4"
 serde_json = "1"
-tokio = { version = "1", features = ["io-util", "net", "rt", "sync"] }
+tokio = { version = "1", features = ["io-util", "net", "rt", "sync", "time"] }

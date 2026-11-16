@@ -172,6 +172,8 @@ pub const SHOW_TIMELINE: &str = "Mostrar línea de tiempo";
 pub const HIDE_TIMELINE: &str = "Ocultar línea de tiempo";
 pub const NO_ANIMATIONS: &str = "Este documento todavía no tiene animaciones.";
 pub const PLAY: &str = "Reproducir";
+/// Stable playback announcement while the clock is running.
+pub const PLAYING: &str = "Reproduciendo";
 pub const PAUSE: &str = "Pausar";
 pub const BASE_VALUES: &str = "Editar base";
 pub const TIME_BACK: &str = "−100 ms";
@@ -310,12 +312,18 @@ pub fn saved(path: Option<&Path>) -> String {
 }
 
 /// Status after a failed save. The technical reason is kept in English.
-pub fn save_failed(error: &dyn Display) -> String {
+pub fn save_failed(error: &designer_engine::dsg::DsgError) -> String {
+    if matches!(error, designer_engine::dsg::DsgError::Locked { .. }) {
+        return DOCUMENT_LOCKED.to_owned();
+    }
     format!("No se pudo guardar; el archivo anterior no ha cambiado. Detalle: {error}")
 }
 
 /// Status after a file could not be opened.
-pub fn open_failed(path: &Path, error: &dyn Display) -> String {
+pub fn open_failed(path: &Path, error: &designer_engine::dsg::DsgError) -> String {
+    if matches!(error, designer_engine::dsg::DsgError::Locked { .. }) {
+        return DOCUMENT_LOCKED.to_owned();
+    }
     format!("No se pudo abrir {}. Detalle: {error}", path.display())
 }
 
@@ -344,7 +352,9 @@ pub const AGENTS_PENDING: &str =
 pub const MCP_UPDATED: &str = "El documento se actualizó desde un cliente MCP.";
 
 pub fn mcp_server_failed(error: &dyn Display) -> String {
-    format!("No se pudo iniciar el puente MCP local. Detalle: {error}")
+    format!(
+        "Otra ventana de Designer ya tiene la conexión MCP en vivo, o no se pudo iniciar el puente local. Detalle: {error}"
+    )
 }
 pub const SHORTCUTS: &str = "Atajos";
 pub const SHORTCUT_LIST: [(&str, &str); 11] = [
@@ -360,6 +370,15 @@ pub const SHORTCUT_LIST: [(&str, &str); 11] = [
     ("Ctrl+T", "Mostrar u ocultar la línea de tiempo"),
     ("Ctrl+Mayús+L", "Cambiar entre tema claro y oscuro"),
 ];
+
+/// Accessibility navigation group.
+pub const SECTIONS: &str = "Secciones";
+/// Accessibility toolbar group.
+pub const TOOLS_ACTIONS: &str = "Herramientas y acciones";
+
+/// Document lock error.
+pub const DOCUMENT_LOCKED: &str =
+    "Otro proceso tiene abierto este documento. Cierra esa sesión antes de abrirlo o guardarlo.";
 
 #[cfg(test)]
 mod tests {
