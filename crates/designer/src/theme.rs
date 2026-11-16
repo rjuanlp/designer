@@ -71,6 +71,8 @@ pub mod metrics {
     pub const INSPECTOR_WIDTH: f32 = 264.0;
     /// Height of the expanded timeline, including its header.
     pub const TIMELINE_HEIGHT: f32 = 292.0;
+    /// Maximum height for preview controls above the canvas in narrow layouts.
+    pub const PREVIEW_CONTROLS_MAX_HEIGHT: f32 = 256.0;
     /// Height of a list row and of a control.
     pub const ROW_HEIGHT: f32 = 28.0;
     /// Indentation per tree level.

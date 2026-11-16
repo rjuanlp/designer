@@ -58,7 +58,7 @@ fn sequence_has_tracks(sequences: &[Sequence]) -> bool {
     })
 }
 
-fn has_tracks(animation: &Animation) -> bool {
+pub(super) fn has_tracks(animation: &Animation) -> bool {
     !animation.tracks.is_empty()
         || !animation.morph_tracks.is_empty()
         || sequence_has_tracks(&animation.sequences)
@@ -257,7 +257,6 @@ impl Shell {
             .min(parent_duration_for_add);
         let can_add_sequence = parent_duration_for_add > local_parent_time
             && page.animation.next_sequence_id().is_some();
-        let page_duration = page.animation.duration_ms;
         let mut sequence_rows = Vec::new();
         append_sequence_rows(&page.animation.sequences, 0, &mut sequence_rows);
         let sequence_controls = row()
@@ -316,11 +315,7 @@ impl Shell {
                 has_tracks(&page.animation),
                 palette,
                 cx.listener(move |this, _, _, cx| {
-                    this.drag = None;
-                    this.preview = None;
-                    this.animation
-                        .toggle_play(std::time::Instant::now(), page_duration);
-                    this.redraw(cx);
+                    this.play_animation(cx);
                 }),
             ))
             .child(

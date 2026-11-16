@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Color, Document, Easing, Keyframe, ModelError, MorphKeyframe, Node, NodeId, NodeKind, PageId,
-    PathData, Property, Rect, Sequence, SequenceId,
+    PathData, Property, Prototype, Rect, Sequence, SequenceId,
 };
 
 /// Most operations one transaction may contain.
@@ -142,6 +142,13 @@ pub enum Operation {
         /// New duration. No keyframe may lie after it.
         duration_ms: u32,
     },
+    /// Replace the interactive states and transitions of a page.
+    SetPrototype {
+        /// Target page.
+        page: PageId,
+        /// New prototype definition.
+        prototype: Prototype,
+    },
     /// Add a nested sequence at the page level or inside another sequence.
     AddSequence {
         /// Target page.
@@ -237,7 +244,7 @@ pub enum Operation {
 
 impl Operation {
     /// The `op` tag of every operation, as serialized.
-    pub const NAMES: [&'static str; 18] = [
+    pub const NAMES: [&'static str; 19] = [
         "add_node",
         "delete_node",
         "set_bounds",
@@ -249,6 +256,7 @@ impl Operation {
         "set_morph_keyframe",
         "remove_morph_keyframe",
         "set_duration",
+        "set_prototype",
         "add_sequence",
         "remove_sequence",
         "set_sequence_timing",
@@ -382,6 +390,7 @@ impl Document {
                 let mut ids = Vec::new();
                 collect_ids(&removed, &mut ids);
                 page.animation.remove_nodes(&ids);
+                page.prototype.remove_nodes(&ids);
                 affected.extend(ids);
             }
             Operation::SetBounds { page, node, bounds } => {
@@ -471,6 +480,22 @@ impl Document {
             Operation::SetDuration { page, duration_ms } => {
                 let page = self.page_mut(*page).ok_or(UnknownPage(*page))?;
                 page.animation.duration_ms = *duration_ms;
+            }
+            Operation::SetPrototype { page, prototype } => {
+                let page = self.page_mut(*page).ok_or(UnknownPage(*page))?;
+                affected.extend(
+                    prototype
+                        .states
+                        .iter()
+                        .flat_map(|state| state.overrides.iter().map(|change| change.node)),
+                );
+                affected.extend(
+                    prototype
+                        .transitions
+                        .iter()
+                        .map(|transition| transition.node),
+                );
+                page.prototype = prototype.clone();
             }
             Operation::AddSequence {
                 page,
@@ -636,10 +661,91 @@ impl Document {
     }
 }
 
+impl Operation {
+    /// All accepted serialized operation discriminators.
+    pub const DISCRIMINATORS: &[&str] = &[
+        "add_node",
+        "delete_node",
+        "set_bounds",
+        "set_name",
+        "set_fill",
+        "set_opacity",
+        "set_keyframe",
+        "remove_keyframe",
+        "set_morph_keyframe",
+        "remove_morph_keyframe",
+        "set_duration",
+        "set_prototype",
+        "add_sequence",
+        "remove_sequence",
+        "set_sequence_timing",
+        "set_sequence_keyframe",
+        "remove_sequence_keyframe",
+        "set_sequence_morph_keyframe",
+        "remove_sequence_morph_keyframe",
+    ];
+    /// Serialized discriminator; exhaustive so new variants require capability updates.
+    pub fn discriminator(&self) -> &'static str {
+        match self {
+            Self::AddNode { .. } => Self::DISCRIMINATORS[0],
+            Self::DeleteNode { .. } => Self::DISCRIMINATORS[1],
+            Self::SetBounds { .. } => Self::DISCRIMINATORS[2],
+            Self::SetName { .. } => Self::DISCRIMINATORS[3],
+            Self::SetFill { .. } => Self::DISCRIMINATORS[4],
+            Self::SetOpacity { .. } => Self::DISCRIMINATORS[5],
+            Self::SetKeyframe { .. } => Self::DISCRIMINATORS[6],
+            Self::RemoveKeyframe { .. } => Self::DISCRIMINATORS[7],
+            Self::SetMorphKeyframe { .. } => Self::DISCRIMINATORS[8],
+            Self::RemoveMorphKeyframe { .. } => Self::DISCRIMINATORS[9],
+            Self::SetDuration { .. } => Self::DISCRIMINATORS[10],
+            Self::SetPrototype { .. } => Self::DISCRIMINATORS[11],
+            Self::AddSequence { .. } => Self::DISCRIMINATORS[12],
+            Self::RemoveSequence { .. } => Self::DISCRIMINATORS[13],
+            Self::SetSequenceTiming { .. } => Self::DISCRIMINATORS[14],
+            Self::SetSequenceKeyframe { .. } => Self::DISCRIMINATORS[15],
+            Self::RemoveSequenceKeyframe { .. } => Self::DISCRIMINATORS[16],
+            Self::SetSequenceMorphKeyframe { .. } => Self::DISCRIMINATORS[17],
+            Self::RemoveSequenceMorphKeyframe { .. } => Self::DISCRIMINATORS[18],
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Animation, PathPoint, PathSegment};
+    use crate::{
+        Animation, FillOverride, INITIAL_STATE, NodeOverride, PathPoint, PathSegment, Prototype,
+        PrototypeState, PrototypeStateId, PrototypeTransition, PrototypeTrigger,
+    };
+
+    #[test]
+    fn all_discriminators_are_recognized_by_serde() {
+        for name in Operation::DISCRIMINATORS {
+            let error = serde_json::from_value::<Operation>(serde_json::json!({"op": name}))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("missing field"), "{name}: {error}");
+            assert!(!error.contains("unknown variant"));
+        }
+        let error = serde_json::from_value::<Operation>(serde_json::json!({"op":"unknown"}))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unknown variant"));
+    }
+    #[test]
+    fn capability_discriminators_are_unique_and_match_serialization() {
+        let names = super::Operation::DISCRIMINATORS;
+        let unique: std::collections::HashSet<_> = names.iter().collect();
+        assert_eq!(names.len(), unique.len());
+        let operation = super::Operation::SetDuration {
+            page: crate::PageId(1),
+            duration_ms: 1000,
+        };
+        assert_eq!(
+            serde_json::to_value(&operation).expect("JSON")["op"],
+            operation.discriminator()
+        );
+    }
 
     const PAGE: PageId = PageId(1);
 
@@ -1001,6 +1107,84 @@ mod tests {
     }
 
     #[test]
+    fn prototype_changes_are_atomic_and_node_deletion_cleans_references() {
+        let document = Document::empty("prototype");
+        let prototype = Prototype {
+            initial: INITIAL_STATE,
+            states: vec![
+                Prototype::default().states[0].clone(),
+                PrototypeState {
+                    id: PrototypeStateId(1),
+                    name: "Hover".into(),
+                    overrides: vec![NodeOverride {
+                        node: NodeId(1),
+                        bounds: None,
+                        fill: Some(FillOverride::Set(Color::rgb(10, 20, 30))),
+                        opacity: Some(0.5),
+                        visible: None,
+                    }],
+                },
+            ],
+            transitions: vec![PrototypeTransition {
+                node: NodeId(1),
+                from: INITIAL_STATE,
+                trigger: PrototypeTrigger::Hover,
+                to: PrototypeStateId(1),
+                duration_ms: 200,
+                easing: Easing::EaseOut,
+            }],
+        };
+        let (created, _) = document
+            .transact(&[
+                add(None, 0.0),
+                Operation::SetPrototype {
+                    page: PAGE,
+                    prototype,
+                },
+            ])
+            .expect("valid state and transition");
+        assert!(created.validate().is_ok());
+
+        let (deleted, _) = created
+            .transact(&[Operation::DeleteNode {
+                page: PAGE,
+                node: NodeId(1),
+            }])
+            .expect("deleting a target removes its prototype references");
+        assert!(deleted.pages[0].prototype.transitions.is_empty());
+        assert!(deleted.pages[0].prototype.states[1].overrides.is_empty());
+        assert!(deleted.validate().is_ok());
+
+        let invalid = Prototype {
+            initial: INITIAL_STATE,
+            states: vec![
+                Prototype::default().states[0].clone(),
+                PrototypeState {
+                    id: PrototypeStateId(1),
+                    name: "Missing".into(),
+                    overrides: vec![NodeOverride {
+                        node: NodeId(999),
+                        bounds: None,
+                        fill: None,
+                        opacity: None,
+                        visible: None,
+                    }],
+                },
+            ],
+            transitions: Vec::new(),
+        };
+        assert!(
+            document
+                .transact(&[Operation::SetPrototype {
+                    page: PAGE,
+                    prototype: invalid,
+                }])
+                .is_err()
+        );
+        assert_eq!(document, Document::empty("prototype"));
+    }
+
+    #[test]
     fn operations_round_trip_through_json_with_stable_names() {
         let operations = vec![
             add(None, 1.0),
@@ -1050,6 +1234,10 @@ mod tests {
             Operation::SetDuration {
                 page: PAGE,
                 duration_ms: 10,
+            },
+            Operation::SetPrototype {
+                page: PAGE,
+                prototype: Prototype::default(),
             },
             Operation::AddSequence {
                 page: PAGE,

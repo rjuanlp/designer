@@ -41,6 +41,7 @@ pub struct WindowsWindowState {
     pub restore_from_minimized: Option<Box<dyn FnMut(RequestFrameOptions)>>,
 
     pub callbacks: Callbacks,
+    pub(crate) a11y: Option<A11yState>,
     pub input_handler: Option<PlatformInputHandler>,
     pub pending_surrogate: Option<u16>,
     pub last_reported_modifiers: Option<Modifiers>,
@@ -108,6 +109,7 @@ impl WindowsWindowState {
         let renderer = DirectXRenderer::new(hwnd, directx_devices, disable_direct_composition)
             .context("Creating DirectX renderer")?;
         let callbacks = Callbacks::default();
+        let a11y = None;
         let input_handler = None;
         let pending_surrogate = None;
         let last_reported_modifiers = None;
@@ -129,6 +131,7 @@ impl WindowsWindowState {
             restore_from_minimized,
             min_size,
             callbacks,
+            a11y,
             input_handler,
             pending_surrogate,
             last_reported_modifiers,
@@ -845,6 +848,35 @@ impl PlatformWindow for WindowsWindow {
         self.0.state.borrow_mut().renderer.draw(scene).log_err();
     }
 
+    fn init_accessibility(
+        &mut self,
+        action_handler: Box<dyn Fn(accesskit::ActionRequest) + Send + 'static>,
+    ) {
+        let hwnd = self.0.hwnd;
+        let adapter = accesskit_windows::Adapter::new(
+            accesskit_windows::HWND(hwnd.0),
+            unsafe { GetForegroundWindow() == hwnd },
+            A11yActionHandler(action_handler),
+        );
+        self.0.state.borrow_mut().a11y = Some(A11yState {
+            adapter,
+            activation_handler: A11yActivationHandler { tree: None },
+        });
+    }
+
+    fn update_accessibility_tree(&mut self, tree: accesskit::TreeUpdate) {
+        let events = {
+            let mut state = self.0.state.borrow_mut();
+            state.a11y.as_mut().and_then(|a11y| {
+                a11y.activation_handler.tree = Some(tree.clone());
+                a11y.adapter.update_if_active(|| tree)
+            })
+        };
+        if let Some(events) = events {
+            events.raise();
+        }
+    }
+
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.0.state.borrow().renderer.sprite_atlas()
     }
@@ -859,6 +891,29 @@ impl PlatformWindow for WindowsWindow {
 
     fn update_ime_position(&self, _bounds: Bounds<Pixels>) {
         // There is no such thing on Windows.
+    }
+}
+
+pub(crate) struct A11yState {
+    pub(crate) adapter: accesskit_windows::Adapter,
+    pub(crate) activation_handler: A11yActivationHandler,
+}
+
+pub(crate) struct A11yActivationHandler {
+    tree: Option<accesskit::TreeUpdate>,
+}
+
+impl accesskit::ActivationHandler for A11yActivationHandler {
+    fn request_initial_tree(&mut self) -> Option<accesskit::TreeUpdate> {
+        self.tree.clone()
+    }
+}
+
+struct A11yActionHandler(Box<dyn Fn(accesskit::ActionRequest) + Send + 'static>);
+
+impl accesskit::ActionHandler for A11yActionHandler {
+    fn do_action(&mut self, request: accesskit::ActionRequest) {
+        (self.0)(request);
     }
 }
 

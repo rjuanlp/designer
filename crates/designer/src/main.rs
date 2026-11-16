@@ -3,18 +3,26 @@
 //! Navigation, panels, themes and a Vello canvas on which frames, rectangles
 //! and ellipses can be drawn, moved and deleted, with undo/redo and `.dsg`
 //! files. The timeline supports basic keyframe editing and playback. Property
-//! editing, text and MCP are not implemented yet.
+//! editing and text entry remain pending. Windows MCP clients can attach to the
+//! live session over a local named pipe or run a separate locked headless session.
+//! AccessKit exposes navigation and screen controls; manual screen-reader
+//! validation remains pending. Per-control bounds are not supplied.
 //!
 //! Launch options, mainly for capturing interface states:
 //! `--size 1440x900`, `--screen documents|design|components|preview|import|preferences`,
 //! `--page N` (zero-based), `--select NODE_ID`, `--panel layers|canvas|inspector`,
 //! `--timeline`, `--light`, `--open FILE.dsg`.
 
+mod prototype_preview;
 mod strings;
 mod theme;
 #[cfg(any(windows, test))]
 mod timeline;
 
+#[cfg(windows)]
+mod accessibility;
+#[cfg(windows)]
+mod bridge;
 #[cfg(windows)]
 mod canvas;
 #[cfg(windows)]
@@ -209,7 +217,7 @@ mod app {
                     ..Default::default()
                 },
                 |window, cx| {
-                    let shell = cx.new(|cx| Shell::new(&options, cx));
+                    let shell = cx.new(|cx| Shell::new(&options, window, cx));
                     window.focus(&shell.read(cx).focus_handle());
                     let closing = shell.clone();
                     window.on_window_should_close(cx, move |window, cx| {

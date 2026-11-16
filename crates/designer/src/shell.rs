@@ -6,12 +6,23 @@ use std::{
     cell::RefCell,
     path::{Path, PathBuf},
     rc::Rc,
+    time::Instant,
 };
 
+use crate::accessibility::*;
+use accesskit::{Action as A11yAction, ActionRequest, NodeId as A11yNodeId};
+use accesskit::{Rect as A11yRect, TreeUpdate};
 use designer_core::{
-    Color, Document, Node, NodeId, NodeKind, Operation, Page, PageId, Rect, sample_document,
+    Color, DEFAULT_PROTOTYPE_DURATION_MS, Document, Easing, FillOverride, INITIAL_STATE,
+    MAX_PROTOTYPE_STATES, Node, NodeId, NodeKind, NodeOverride, Operation, Page, PageId,
+    PrototypeState, PrototypeStateId, PrototypeTransition, PrototypeTrigger, Rect, sample_document,
 };
-use designer_engine::{Session, dsg};
+use designer_engine::{
+    Session,
+    bridge::{SessionReply, SessionRequest, execute_session_request},
+    dsg,
+    import::{self, ImportReport, ImportResult},
+};
 use designer_gpu_bridge::SharedFrame;
 use designer_render::document::hit_test;
 use gpui::{
@@ -24,6 +35,7 @@ use gpui::{
 use crate::{
     LaunchOptions,
     canvas::CanvasHost,
+    prototype_preview::PrototypePreview,
     strings::{self, NarrowPanel, Screen, Tool},
     theme::{self, LayoutMode, Palette, layout_mode, metrics},
 };
@@ -94,6 +106,7 @@ enum Pending {
     New,
     Sample,
     Open,
+    Import,
     Close,
 }
 
@@ -182,11 +195,17 @@ pub struct Shell {
     /// session document.
     preview: Option<Document>,
     drag: Option<Drag>,
+    prompt_pending: bool,
+    a11y_focus: A11yNodeId,
+    a11y_cache: Option<TreeUpdate>,
     /// Changes whenever the canvas content or the selection changes.
     generation: u64,
     /// Changes whenever the canvas view must be fitted again.
     view_epoch: u64,
     status: Option<SharedString>,
+    import_preview: Option<ImportResult>,
+    import_report: Option<ImportReport>,
+    pending_import: Option<ImportResult>,
     window_title: String,
     page: PageId,
     selection: Option<NodeId>,
@@ -194,16 +213,18 @@ pub struct Shell {
     tool: Tool,
     timeline_open: bool,
     animation: crate::timeline::Timeline,
+    prototype_preview: PrototypePreview,
     dark: bool,
     narrow_panel: NarrowPanel,
     canvas: Rc<RefCell<CanvasHost>>,
     focus: FocusHandle,
+    accessibility_sender: tokio::sync::mpsc::UnboundedSender<ActionRequest>,
 }
 
 impl Shell {
     /// Create the shell with the document named on the command line, or the
     /// built-in sample document.
-    pub fn new(options: &LaunchOptions, cx: &mut Context<Self>) -> Self {
+    pub fn new(options: &LaunchOptions, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut status = None;
         let session = match &options.open {
             Some(path) => Session::open(path).unwrap_or_else(|error| {
@@ -224,13 +245,53 @@ impl Shell {
                 .page(page)
                 .is_some_and(|page| page.node(*id).is_some())
         });
+        let prototype_preview = PrototypePreview::new(
+            document
+                .page(page)
+                .expect("a validated document has its selected page"),
+        );
+        let (bridge_sender, mut bridge_receiver) =
+            tokio::sync::mpsc::unbounded_channel::<crate::bridge::PendingRequest>();
+        if let Err(error) = crate::bridge::start_pipe_server(bridge_sender) {
+            status = Some(strings::mcp_server_failed(&error).into());
+        }
+        cx.spawn(async move |this, cx| {
+            while let Some(request) = bridge_receiver.recv().await {
+                let reply = this
+                    .update(cx, |this, cx| this.handle_mcp_request(request.command, cx))
+                    .unwrap_or_else(|error| SessionReply::Error {
+                        error: format!("Designer window is unavailable: {error}"),
+                    });
+                let _ = request.reply.send(reply);
+            }
+        })
+        .detach();
+        let (accessibility_sender, mut accessibility_receiver) =
+            tokio::sync::mpsc::unbounded_channel();
+        cx.spawn_in(window, async move |this, cx| {
+            while let Some(action) = accessibility_receiver.recv().await {
+                if let Err(error) = this.update_in(cx, |this, window, cx| {
+                    this.handle_accessibility_action(action, window, cx)
+                }) {
+                    eprintln!("Screen-reader action could not reach Designer: {error}");
+                    break;
+                }
+            }
+        })
+        .detach();
         Self {
             session,
             preview: None,
             drag: None,
+            prompt_pending: false,
+            a11y_focus: A11yNodeId(0),
+            a11y_cache: None,
             generation: 0,
             view_epoch: 0,
             status,
+            import_preview: None,
+            import_report: None,
+            pending_import: None,
             window_title: String::new(),
             page,
             selection,
@@ -238,10 +299,12 @@ impl Shell {
             tool: Tool::Move,
             timeline_open: options.timeline,
             animation: crate::timeline::Timeline::default(),
+            prototype_preview,
             dark: !options.light,
             narrow_panel: options.panel,
             canvas: Rc::new(RefCell::new(CanvasHost::new())),
             focus: cx.focus_handle(),
+            accessibility_sender,
         }
     }
 
@@ -296,14 +359,213 @@ impl Shell {
             .pages
             .first()
             .map_or(PageId(0), |page| page.id);
-        self.session = session;
+        self.session = session.succeeding(&self.session);
+        if let Some(page) = self.session.document().page(self.page) {
+            self.prototype_preview = PrototypePreview::new(page);
+        }
         self.selection = None;
         self.drag = None;
         self.preview = None;
+        self.import_preview = None;
         self.tool = Tool::Move;
         self.view_epoch += 1;
         self.screen = Screen::Design;
         self.redraw(cx);
+    }
+
+    fn handle_mcp_request(
+        &mut self,
+        request: SessionRequest,
+        cx: &mut Context<Self>,
+    ) -> SessionReply {
+        let replace_document = matches!(
+            &request,
+            SessionRequest::NewDocument { .. } | SessionRequest::ImportFigmaJson { .. }
+        );
+        let changes_session = !matches!(
+            &request,
+            SessionRequest::ReadDocument
+                | SessionRequest::DescribeCapabilities
+                | SessionRequest::RenderSnapshot { .. }
+        );
+        if changes_session && (self.drag.is_some() || self.prompt_pending) {
+            return SessionReply::Error {
+                error: concat!(
+                    "Designer is busy with a canvas drag or unsaved-changes prompt; ",
+                    "finish it before retrying"
+                )
+                .into(),
+            };
+        }
+        match execute_session_request(&mut self.session, request) {
+            Ok(result) => {
+                if changes_session {
+                    if replace_document {
+                        self.page = self
+                            .session
+                            .document()
+                            .pages
+                            .first()
+                            .map_or(PageId(0), |page| page.id);
+                        self.selection = None;
+                        self.animation = crate::timeline::Timeline::default();
+                        self.screen = Screen::Design;
+                        self.import_preview = None;
+                        self.import_report = None;
+                        self.pending_import = None;
+                    }
+                    self.status = Some(strings::MCP_UPDATED.into());
+                    self.settle(cx);
+                }
+                SessionReply::Ok { result }
+            }
+            Err(error) => SessionReply::Error { error },
+        }
+    }
+
+    fn handle_accessibility_action(
+        &mut self,
+        request: ActionRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.a11y_cache.as_ref().is_some_and(|tree| {
+            tree.nodes.iter().any(|(id, node)| {
+                *id == request.target_node && node.supports_action(request.action)
+            })
+        }) {
+            return;
+        }
+        self.a11y_focus = request.target_node;
+        if request.action == A11yAction::Focus {
+            cx.notify();
+            return;
+        }
+        if request.action != A11yAction::Click {
+            return;
+        }
+        let target = request.target_node.0;
+        match target {
+            A11Y_NEW => {
+                self.guarded(Pending::New, window, cx);
+                return;
+            }
+            A11Y_OPEN => {
+                self.guarded(Pending::Open, window, cx);
+                return;
+            }
+            A11Y_SAVE_AS => {
+                self.save_as(cx);
+                return;
+            }
+            A11Y_SAMPLE => {
+                self.guarded(Pending::Sample, window, cx);
+                return;
+            }
+            A11Y_TIMELINE => {
+                self.toggle_timeline(&ToggleTimeline, window, cx);
+                return;
+            }
+            A11Y_PLAY => {
+                self.play_animation(cx);
+                return;
+            }
+            A11Y_HOVER => {
+                self.create_prototype_state(PrototypeTrigger::Hover, cx);
+                return;
+            }
+            A11Y_CLICK => {
+                self.create_prototype_state(PrototypeTrigger::Click, cx);
+                return;
+            }
+            A11Y_REMOVE_STATE => {
+                self.remove_prototype_state(self.prototype_preview.state(), cx);
+                return;
+            }
+            A11Y_IMPORT_PICK => {
+                self.open_import(cx);
+                return;
+            }
+            A11Y_IMPORT_APPLY => {
+                self.apply_import(window, cx);
+                return;
+            }
+            A11Y_THEME => {
+                self.toggle_theme(&ToggleTheme, window, cx);
+                return;
+            }
+            A11Y_PANEL_BASE..=A11Y_PANEL_LAST => {
+                self.select_panel(NarrowPanel::ALL[(target - A11Y_PANEL_BASE) as usize], cx);
+                return;
+            }
+            _ => {}
+        }
+        if let Some(id) = target.checked_sub(A11Y_STATE_BASE) {
+            self.select_prototype_state(PrototypeStateId(id), cx);
+            return;
+        }
+        if (A11Y_NAV_BASE..A11Y_NAV_BASE + Screen::ALL.len() as u64).contains(&target) {
+            let screen = Screen::ALL[(target - A11Y_NAV_BASE) as usize];
+            self.select_screen(screen, cx);
+        } else if (A11Y_TOOL_BASE..A11Y_TOOL_BASE + Tool::ALL.len() as u64).contains(&target) {
+            self.select_tool(Tool::ALL[(target - A11Y_TOOL_BASE) as usize], cx);
+        } else if target == A11Y_UNDO {
+            self.undo(&Undo, window, cx);
+        } else if target == A11Y_REDO {
+            self.redo(&Redo, window, cx);
+        } else if target == A11Y_DELETE {
+            self.delete_selection(&DeleteSelection, window, cx);
+        } else if let Some(id) = target
+            .checked_sub(A11Y_LAYER_BASE)
+            .map(NodeId)
+            .filter(|id| {
+                self.current_page()
+                    .is_some_and(|page| page.node(*id).is_some())
+            })
+        {
+            self.select_layer(id, cx);
+        }
+    }
+
+    fn accessibility_tree(&self, window: &Window) -> TreeUpdate {
+        let bounds = window.bounds();
+        build_accessibility_tree(A11ySnapshot {
+            dark: self.dark,
+            timeline: self.timeline_open,
+            playing: self.animation.is_playing(),
+            time_ms: self.animation.time_ms,
+            can_play: self
+                .current_page()
+                .is_some_and(|p| timeline_view::has_tracks(&p.animation)),
+            narrow: layout_mode(f32::from(window.bounds().size.width)) == LayoutMode::Narrow,
+            panel: self.narrow_panel,
+            prototype_state: self.prototype_preview.state(),
+            can_import: self.import_preview.is_some(),
+            import_summary: self
+                .import_preview
+                .as_ref()
+                .map(|r| &r.report)
+                .or(self.import_report.as_ref())
+                .map_or_else(
+                    || strings::IMPORT_NO_RESULT.to_owned(),
+                    |r| strings::import_summary(r.imported_nodes, import_warning_count(r)),
+                ),
+            focus: self.a11y_focus,
+            screen: self.screen,
+            tool: self.tool,
+            selection: self.selection,
+            page: self.current_page(),
+            can_undo: self.session.can_undo(),
+            can_redo: self.session.can_redo(),
+            status: self.status.as_deref().map(|status| &**status),
+            title: format!("{} — {}", self.title(), strings::APP_NAME),
+            bounds: A11yRect::new(
+                f64::from(f32::from(bounds.origin.x)),
+                f64::from(f32::from(bounds.origin.y)),
+                f64::from(f32::from(bounds.origin.x + bounds.size.width)),
+                f64::from(f32::from(bounds.origin.y + bounds.size.height)),
+            ),
+        })
     }
 
     /// Drop a selection that no longer exists, as after undo.
@@ -318,6 +580,9 @@ impl Shell {
         if !exists {
             self.selection = None;
         }
+        if let Some(page) = self.current_page() {
+            self.prototype_preview = PrototypePreview::new(page);
+        }
         if self.animation.active_sequence.is_some_and(|id| {
             !self
                 .current_page()
@@ -329,6 +594,7 @@ impl Shell {
     }
 
     fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(A11Y_UNDO);
         if self.session.undo() {
             self.status = None;
         }
@@ -336,6 +602,7 @@ impl Shell {
     }
 
     fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(A11Y_REDO);
         if self.session.redo() {
             self.status = None;
         }
@@ -343,6 +610,7 @@ impl Shell {
     }
 
     fn delete_selection(&mut self, _: &DeleteSelection, _: &mut Window, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(A11Y_DELETE);
         let Some(node) = self.selection else {
             return;
         };
@@ -377,6 +645,7 @@ impl Shell {
     }
 
     fn save_as(&mut self, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(A11Y_SAVE_AS);
         let (directory, name) = match self.session.path() {
             Some(path) => (
                 path.parent().map(Path::to_owned),
@@ -438,8 +707,66 @@ impl Shell {
         .detach();
     }
 
+    fn open_import(&mut self, cx: &mut Context<Self>) {
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+        cx.spawn(async move |this, cx| {
+            let result = chosen.await;
+            match result {
+                Ok(Ok(Some(paths))) => {
+                    let Some(path) = paths.first().cloned() else {
+                        return;
+                    };
+                    this.update(cx, |this, cx| {
+                        this.status = Some(strings::IMPORT_LOADING.into());
+                        this.import_preview = None;
+                        this.import_report = None;
+                        cx.notify();
+                    })
+                    .ok();
+                    let imported = cx
+                        .background_spawn(async move { import::import_figma_file(&path) })
+                        .await;
+                    this.update(cx, |this, cx| match imported {
+                        Ok(imported) => {
+                            this.status = Some(
+                                strings::import_summary(
+                                    imported.report.imported_nodes,
+                                    import_warning_count(&imported.report),
+                                )
+                                .into(),
+                            );
+                            this.import_report = None;
+                            this.import_preview = Some(imported);
+                            this.screen = Screen::Import;
+                            this.redraw(cx);
+                        }
+                        Err(error) => {
+                            this.status = Some(strings::import_failed(&error).into());
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                }
+                Ok(Ok(None)) | Err(_) => {}
+                Ok(Err(error)) => {
+                    this.update(cx, |this, cx| {
+                        this.status = Some(strings::dialog_failed(&error).into());
+                        cx.notify();
+                    })
+                    .ok();
+                }
+            }
+        })
+        .detach();
+    }
+
     fn open_path(&mut self, path: &Path, cx: &mut Context<Self>) {
-        match Session::open(path) {
+        match self.session.reopen(path) {
             Ok(session) => {
                 self.status = None;
                 self.replace_session(session, cx);
@@ -463,6 +790,17 @@ impl Shell {
                 self.replace_session(Session::new(sample_document()), cx);
             }
             Pending::Open => self.open_dialog(cx),
+            Pending::Import => {
+                if let Some(imported) = self.pending_import.take() {
+                    let imported_count = imported.report.imported_nodes;
+                    let warning_count = import_warning_count(&imported.report);
+                    self.import_report = Some(imported.report);
+                    self.import_preview = None;
+                    self.replace_session(Session::new(imported.document), cx);
+                    self.status =
+                        Some(strings::import_applied(imported_count, warning_count).into());
+                }
+            }
             Pending::Close => window.remove_window(),
         }
     }
@@ -472,6 +810,7 @@ impl Shell {
         if !self.session.is_dirty() {
             return self.perform(pending, window, cx);
         }
+        self.prompt_pending = true;
         let answer = window.prompt(
             PromptLevel::Warning,
             strings::UNSAVED_TITLE,
@@ -480,9 +819,16 @@ impl Shell {
             cx,
         );
         cx.spawn_in(window, async move |this, cx| {
-            if answer.await == Ok(0) {
+            let answer = answer.await;
+            this.update(cx, |this, _| this.prompt_pending = false).ok();
+            if answer == Ok(0) {
                 this.update_in(cx, |this, window, cx| this.perform(pending, window, cx))
                     .ok();
+            } else if pending == Pending::Import {
+                this.update(cx, |this, _| {
+                    this.import_preview = this.pending_import.take();
+                })
+                .ok();
             }
         })
         .detach();
@@ -525,6 +871,172 @@ impl Shell {
         )
     }
 
+    fn reset_prototype_preview(&mut self) {
+        if let Some(page) = self.session.document().page(self.page) {
+            self.prototype_preview = PrototypePreview::new(page);
+        }
+    }
+
+    fn preview_page_at(&self, now: Instant) -> Option<Page> {
+        let page = self.session.document().page(self.page)?;
+        self.prototype_preview.page_at(page, now)
+    }
+
+    fn preview_hit(&self, position: Point<Pixels>) -> Option<NodeId> {
+        let point = self.pointer(position)?;
+        let page = self.preview_page_at(Instant::now())?;
+        hit_test(&page, point.0, point.1)
+    }
+
+    fn create_prototype_state(&mut self, trigger: PrototypeTrigger, cx: &mut Context<Self>) {
+        let Some(node_id) = self.selection else {
+            self.status = Some(strings::PREVIEW_SELECT_NODE.into());
+            cx.notify();
+            return;
+        };
+        let Some(page) = self.session.document().page(self.page).cloned() else {
+            return;
+        };
+        let Some(node) = page.node(node_id) else {
+            self.selection = None;
+            self.status = Some(strings::PREVIEW_SELECT_NODE.into());
+            cx.notify();
+            return;
+        };
+        if page.prototype.states.len() >= MAX_PROTOTYPE_STATES {
+            self.status = Some(strings::PROTOTYPE_STATE_LIMIT.into());
+            cx.notify();
+            return;
+        }
+        let Some(id) = page
+            .prototype
+            .states
+            .iter()
+            .map(|state| state.id.0)
+            .max()
+            .unwrap_or(INITIAL_STATE.0)
+            .checked_add(1)
+        else {
+            self.status = Some(strings::PROTOTYPE_STATE_LIMIT.into());
+            cx.notify();
+            return;
+        };
+        if page
+            .prototype
+            .transition(node_id, INITIAL_STATE, trigger)
+            .is_some()
+        {
+            self.status = Some(strings::PROTOTYPE_TRIGGER_EXISTS.into());
+            cx.notify();
+            return;
+        }
+        let state = PrototypeStateId(id);
+        let fill = node.fill.map(|mut color| {
+            let shift: i16 = if trigger == PrototypeTrigger::Hover {
+                36
+            } else {
+                -36
+            };
+            color.r = (i16::from(color.r) + shift).clamp(0, 255) as u8;
+            color.g = (i16::from(color.g) + shift).clamp(0, 255) as u8;
+            color.b = (i16::from(color.b) + shift).clamp(0, 255) as u8;
+            FillOverride::Set(color)
+        });
+        let opacity = node
+            .fill
+            .is_none()
+            .then_some((node.opacity * 0.72).max(0.12));
+        let mut prototype = page.prototype.clone();
+        let name = match trigger {
+            PrototypeTrigger::Hover => format!("Al pasar {id}"),
+            PrototypeTrigger::HoverLeave | PrototypeTrigger::Click => format!("Al pulsar {id}"),
+        };
+        prototype.states.push(PrototypeState {
+            id: state,
+            name,
+            overrides: vec![NodeOverride {
+                node: node_id,
+                bounds: None,
+                fill,
+                opacity,
+                visible: None,
+            }],
+        });
+        let transition = PrototypeTransition {
+            node: node_id,
+            from: INITIAL_STATE,
+            trigger,
+            to: state,
+            duration_ms: DEFAULT_PROTOTYPE_DURATION_MS,
+            easing: Easing::EaseOut,
+        };
+        prototype.transitions.push(transition);
+        if trigger == PrototypeTrigger::Hover {
+            prototype.transitions.push(PrototypeTransition {
+                node: node_id,
+                from: state,
+                trigger: PrototypeTrigger::HoverLeave,
+                to: INITIAL_STATE,
+                duration_ms: DEFAULT_PROTOTYPE_DURATION_MS,
+                easing: Easing::EaseOut,
+            });
+        } else {
+            prototype.transitions.push(PrototypeTransition {
+                node: node_id,
+                from: state,
+                trigger: PrototypeTrigger::Click,
+                to: INITIAL_STATE,
+                duration_ms: DEFAULT_PROTOTYPE_DURATION_MS,
+                easing: Easing::EaseOut,
+            });
+        }
+        match self.session.apply(&[Operation::SetPrototype {
+            page: self.page,
+            prototype,
+        }]) {
+            Ok(_) => {
+                self.status = Some(strings::PROTOTYPE_STATE_CREATED.into());
+                self.reset_prototype_preview();
+                self.redraw(cx);
+            }
+            Err(error) => {
+                self.status = Some(strings::change_failed(&error).into());
+                cx.notify();
+            }
+        }
+    }
+
+    fn remove_prototype_state(&mut self, state: PrototypeStateId, cx: &mut Context<Self>) {
+        if state == INITIAL_STATE {
+            return;
+        }
+        let Some(page) = self.session.document().page(self.page).cloned() else {
+            return;
+        };
+        let mut prototype = page.prototype.clone();
+        if !prototype.states.iter().any(|entry| entry.id == state) {
+            return;
+        }
+        prototype.states.retain(|entry| entry.id != state);
+        prototype
+            .transitions
+            .retain(|transition| transition.from != state && transition.to != state);
+        match self.session.apply(&[Operation::SetPrototype {
+            page: self.page,
+            prototype,
+        }]) {
+            Ok(_) => {
+                self.status = Some(strings::PROTOTYPE_STATE_REMOVED.into());
+                self.reset_prototype_preview();
+                self.redraw(cx);
+            }
+            Err(error) => {
+                self.status = Some(strings::change_failed(&error).into());
+                cx.notify();
+            }
+        }
+    }
+
     fn canvas_mouse_down(
         &mut self,
         event: &MouseDownEvent,
@@ -533,6 +1045,11 @@ impl Shell {
     ) {
         // Keyboard shortcuts act on the canvas after a click on it.
         window.focus(&self.focus);
+        if self.screen == Screen::Preview {
+            self.prototype_preview
+                .pointer_down(self.preview_hit(event.position));
+            return;
+        }
         if self.animation.preview {
             self.animation.pause();
             self.status = Some(strings::ANIMATION_EDIT_HINT.into());
@@ -573,6 +1090,19 @@ impl Shell {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.screen == Screen::Preview {
+            let page = self.session.document().page(self.page).cloned();
+            if let Some(page) = page
+                && self.prototype_preview.pointer_moved(
+                    &page,
+                    self.preview_hit(event.position),
+                    Instant::now(),
+                )
+            {
+                self.redraw(cx);
+            }
+            return;
+        }
         if self.drag.is_none() || !event.dragging() {
             return;
         }
@@ -588,6 +1118,19 @@ impl Shell {
     }
 
     fn canvas_mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.screen == Screen::Preview {
+            let page = self.session.document().page(self.page).cloned();
+            if let Some(page) = page
+                && self.prototype_preview.pointer_up(
+                    &page,
+                    self.preview_hit(event.position),
+                    Instant::now(),
+                )
+            {
+                self.redraw(cx);
+            }
+            return;
+        }
         let Some(drag) = self.drag else {
             return;
         };
@@ -610,7 +1153,77 @@ impl Shell {
         self.redraw(cx);
     }
 
+    fn select_screen(&mut self, screen: Screen, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(
+            A11Y_NAV_BASE + Screen::ALL.iter().position(|s| *s == screen).unwrap_or(0) as u64,
+        );
+        if screen == Screen::Preview {
+            self.reset_prototype_preview();
+        }
+        self.drag = None;
+        self.preview = None;
+        self.screen = screen;
+        self.redraw(cx);
+    }
+    fn select_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(
+            A11Y_TOOL_BASE + Tool::ALL.iter().position(|t| *t == tool).unwrap_or(0) as u64,
+        );
+        self.tool = tool;
+        self.drag = None;
+        self.preview = None;
+        self.redraw(cx);
+    }
+    fn select_layer(&mut self, id: NodeId, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(A11Y_LAYER_BASE.saturating_add(id.0));
+        self.selection = Some(id);
+        self.redraw(cx);
+    }
+    fn select_panel(&mut self, panel: NarrowPanel, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(
+            A11Y_PANEL_BASE
+                + NarrowPanel::ALL
+                    .iter()
+                    .position(|p| *p == panel)
+                    .unwrap_or(0) as u64,
+        );
+        self.narrow_panel = panel;
+        cx.notify();
+    }
+    fn set_theme(&mut self, dark: bool, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(A11Y_THEME);
+        self.dark = dark;
+        cx.notify();
+    }
+    fn apply_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(A11Y_IMPORT_APPLY);
+        if let Some(imported) = self.import_preview.take() {
+            self.import_report = Some(imported.report.clone());
+            self.pending_import = Some(imported);
+            self.guarded(Pending::Import, window, cx);
+        }
+    }
+    fn select_prototype_state(&mut self, id: PrototypeStateId, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(A11Y_STATE_BASE.saturating_add(id.0));
+        if let Some(page) = self.session.document().page(self.page)
+            && page.prototype.state(id).is_some()
+        {
+            self.prototype_preview.select_state(page, id);
+            self.redraw(cx);
+        }
+    }
+    fn play_animation(&mut self, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(A11Y_PLAY);
+        if let Some(page) = self.current_page() {
+            let duration = page.animation.duration_ms;
+            self.drag = None;
+            self.preview = None;
+            self.animation.toggle_play(Instant::now(), duration);
+            self.redraw(cx);
+        }
+    }
     fn toggle_timeline(&mut self, _: &ToggleTimeline, _: &mut Window, cx: &mut Context<Self>) {
+        self.a11y_focus = A11yNodeId(A11Y_TIMELINE);
         self.timeline_open = !self.timeline_open;
         if !self.timeline_open {
             self.animation.pause();
@@ -620,8 +1233,7 @@ impl Shell {
     }
 
     fn toggle_theme(&mut self, _: &ToggleTheme, _: &mut Window, cx: &mut Context<Self>) {
-        self.dark = !self.dark;
-        cx.notify();
+        self.set_theme(!self.dark, cx);
     }
 
     fn focus_next(&mut self, _: &FocusNext, window: &mut Window, _: &mut Context<Self>) {
@@ -708,6 +1320,10 @@ fn muted(text: impl Into<SharedString>, palette: &Palette) -> Div {
     div().text_color(rgb(palette.text_muted)).child(text.into())
 }
 
+fn import_warning_count(report: &import::ImportReport) -> usize {
+    report.warnings.len() + report.omitted_warnings
+}
+
 /// Format a document number without a trailing `.0`.
 pub fn format_number(value: f64) -> String {
     let rounded = (value * 100.0).round() / 100.0;
@@ -765,8 +1381,7 @@ impl Shell {
                     self.screen == screen,
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.screen = screen;
-                    cx.notify();
+                    this.select_screen(screen, cx);
                 }))
             }))
     }
@@ -787,10 +1402,7 @@ impl Shell {
             .children(Tool::ALL.into_iter().enumerate().map(|(index, tool)| {
                 button(("tool", index), tool.label(), palette, self.tool == tool).on_click(
                     cx.listener(move |this, _, _, cx| {
-                        this.tool = tool;
-                        this.drag = None;
-                        this.preview = None;
-                        this.redraw(cx);
+                        this.select_tool(tool, cx);
                     }),
                 )
             }))
@@ -939,8 +1551,7 @@ impl Shell {
             .when(!node.visible, |this| this.child(state(strings::HIDDEN)))
             .when(node.locked, |this| this.child(state(strings::LOCKED)))
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.selection = Some(id);
-                this.redraw(cx);
+                this.select_layer(id, cx);
             }))
             .into_any_element()
     }
@@ -1089,16 +1700,22 @@ impl Shell {
                 muted(error.to_owned(), palette).into_any_element(),
             ]));
         }
-        let Some(page) = self.current_page().cloned() else {
+        let Some(page) = (if self.screen == Screen::Preview {
+            self.preview_page_at(Instant::now())
+        } else {
+            self.current_page().cloned()
+        }) else {
             return panel;
         };
-        let page = if self.animation.preview {
+        let page = if self.screen == Screen::Design && self.animation.preview {
             page.at_time(self.animation.time_ms)
         } else {
             page
         };
         let empty = page.nodes.is_empty();
-        let selection = self.shown_selection();
+        let selection = (self.screen != Screen::Preview)
+            .then(|| self.shown_selection())
+            .flatten();
         let (generation, view_epoch) = (self.generation, self.view_epoch);
         let host = self.canvas.clone();
         let vello_canvas = canvas(
@@ -1242,8 +1859,7 @@ impl Shell {
                                 )
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
-                                        this.narrow_panel = panel;
-                                        cx.notify();
+                                        this.select_panel(panel, cx);
                                     },
                                 ))
                             },
@@ -1340,6 +1956,242 @@ impl Shell {
             .child(muted(screen.pending_description(), palette))
     }
 
+    fn import_screen(&self, palette: &Palette, cx: &mut Context<Self>) -> Div {
+        let report = self
+            .import_preview
+            .as_ref()
+            .map(|result| &result.report)
+            .or(self.import_report.as_ref());
+        let summary = report.map_or_else(
+            || strings::IMPORT_NO_RESULT.to_owned(),
+            |report| strings::import_summary(report.imported_nodes, import_warning_count(report)),
+        );
+        let warnings: Vec<Div> = report
+            .into_iter()
+            .flat_map(|report| report.warnings.iter())
+            .take(100)
+            .map(|warning| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(metrics::SPACE_XS))
+                    .child(warning.source_path.clone())
+                    .child(muted(warning.detail.clone(), palette))
+            })
+            .collect();
+        let can_apply = self.import_preview.is_some();
+        self.page_frame(Screen::Import.label())
+            .child(muted(strings::IMPORT_DESCRIPTION, palette))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(metrics::SPACE_S))
+                    .child(
+                        button(
+                            "import-pick-file",
+                            strings::IMPORT_PICK_FILE,
+                            palette,
+                            false,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.open_import(cx))),
+                    )
+                    .child(command(
+                        "import-apply",
+                        strings::IMPORT_APPLY,
+                        can_apply,
+                        palette,
+                        cx.listener(|this, _, window, cx| {
+                            this.apply_import(window, cx);
+                        }),
+                    )),
+            )
+            .child(div().child(strings::IMPORT_REPORT))
+            .child(div().child(summary))
+            .child(div().child(strings::IMPORT_WARNINGS))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(metrics::SPACE_S))
+                    .children(warnings)
+                    .when(
+                        report.is_some_and(|report| import_warning_count(report) > 100),
+                        |this| {
+                            this.child(muted(
+                                report.map_or_else(String::new, |report| {
+                                    strings::import_more_warnings(import_warning_count(report))
+                                }),
+                                palette,
+                            ))
+                        },
+                    ),
+            )
+            .when(
+                report.is_some_and(|report| {
+                    report.warnings.is_empty() && report.omitted_warnings == 0
+                }),
+                |this| this.child(muted(strings::IMPORT_NO_WARNINGS, palette)),
+            )
+            .when(
+                report.is_some_and(|report| report.omitted_warnings > 0),
+                |this| {
+                    this.child(muted(
+                        strings::import_omitted_warnings(
+                            report.map_or(0, |report| report.omitted_warnings),
+                        ),
+                        palette,
+                    ))
+                },
+            )
+            .when_some(self.status.clone(), |this, status| {
+                this.child(div().child(status))
+            })
+    }
+
+    fn preview(&self, mode: LayoutMode, palette: &Palette, cx: &mut Context<Self>) -> Div {
+        let Some(page) = self.session.document().page(self.page) else {
+            return self.page_frame(Screen::Preview.label());
+        };
+        let mut rows = Vec::new();
+        flatten(&page.nodes, 0, &mut rows);
+        let state_rows = page
+            .prototype
+            .states
+            .iter()
+            .enumerate()
+            .map(|(index, state)| {
+                let id = state.id;
+                let label = if id == INITIAL_STATE {
+                    strings::PREVIEW_INITIAL.to_owned()
+                } else {
+                    state.name.clone()
+                };
+                button(
+                    ("prototype-state", index),
+                    label,
+                    palette,
+                    self.prototype_preview.state() == id,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.select_prototype_state(id, cx);
+                }))
+            });
+        let selected = self
+            .selection
+            .and_then(|id| page.node(id))
+            .map(|node| node.name.clone())
+            .unwrap_or_else(|| strings::NO_SELECTED_LAYER.to_owned());
+        let node_rows = if rows.is_empty() {
+            div().child(muted(strings::NO_PROTOTYPE_STATES, palette))
+        } else {
+            div().flex().flex_col().gap(px(metrics::SPACE_XS)).children(
+                rows.iter().enumerate().map(|(index, (depth, node))| {
+                    let id = node.id;
+                    let label = format!("{}{}", " ".repeat(depth.saturating_mul(2)), node.name);
+                    button(
+                        ("prototype-node", index),
+                        label,
+                        palette,
+                        self.selection == Some(id),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.select_layer(id, cx);
+                    }))
+                }),
+            )
+        };
+        let make_hover = command(
+            "prototype-create-hover",
+            strings::CREATE_HOVER_STATE,
+            self.selection.is_some() && page.prototype.states.len() < MAX_PROTOTYPE_STATES,
+            palette,
+            cx.listener(|this, _, _, cx| {
+                this.create_prototype_state(PrototypeTrigger::Hover, cx);
+            }),
+        );
+        let make_click = command(
+            "prototype-create-click",
+            strings::CREATE_CLICK_STATE,
+            self.selection.is_some() && page.prototype.states.len() < MAX_PROTOTYPE_STATES,
+            palette,
+            cx.listener(|this, _, _, cx| {
+                this.create_prototype_state(PrototypeTrigger::Click, cx);
+            }),
+        );
+        let remove_state = command(
+            "prototype-remove-state",
+            strings::REMOVE_PROTOTYPE_STATE,
+            self.prototype_preview.state() != INITIAL_STATE,
+            palette,
+            cx.listener(|this, _, _, cx| {
+                let state = this.prototype_preview.state();
+                this.remove_prototype_state(state, cx);
+            }),
+        );
+        let controls = div()
+            .id("prototype-controls")
+            .flex()
+            .flex_col()
+            .flex_none()
+            .min_h_0()
+            .gap(px(metrics::SPACE_S))
+            .when(mode == LayoutMode::Wide, |this| {
+                this.w(px(metrics::INSPECTOR_WIDTH))
+                    .h_full()
+                    .overflow_y_scroll()
+            })
+            .when(mode == LayoutMode::Narrow, |this| {
+                this.w_full()
+                    .max_h(px(metrics::PREVIEW_CONTROLS_MAX_HEIGHT))
+                    .overflow_y_scroll()
+            })
+            .child(div().child(strings::PROTOTYPE_STATES))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(metrics::SPACE_XS))
+                    .children(state_rows),
+            )
+            .child(remove_state)
+            .child(div().child(strings::SELECTED_LAYER))
+            .child(muted(selected, palette))
+            .child(make_hover)
+            .child(make_click)
+            .child(div().child(strings::PROTOTYPE_LAYERS))
+            .child(node_rows);
+        let canvas = div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .border_1()
+            .border_color(rgb(palette.border))
+            .child(self.canvas_panel(palette, cx));
+        let body = match mode {
+            LayoutMode::Wide => div()
+                .flex()
+                .flex_1()
+                .min_h_0()
+                .gap(px(metrics::SPACE_M))
+                .child(canvas)
+                .child(controls),
+            LayoutMode::Narrow => div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .gap(px(metrics::SPACE_M))
+                .child(controls)
+                .child(canvas),
+        };
+        self.page_frame(Screen::Preview.label())
+            .child(muted(strings::PREVIEW_HELP, palette))
+            .child(body)
+    }
+
     fn preferences(&self, palette: &Palette, cx: &mut Context<Self>) -> Div {
         let heading = |label: &'static str| div().pt(px(metrics::SPACE_M)).child(label);
         let themes = [(strings::THEME_DARK, true), (strings::THEME_LIGHT, false)];
@@ -1369,8 +2221,7 @@ impl Shell {
                             .map(|(index, (label, dark))| {
                                 button(("theme", index), label, palette, self.dark == dark)
                                     .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.dark = dark;
-                                        cx.notify();
+                                        this.set_theme(dark, cx);
                                     }))
                             }),
                     ),
@@ -1400,6 +2251,17 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let accessibility_sender = self.accessibility_sender.clone();
+        window.init_accessibility(move |request| {
+            if accessibility_sender.send(request).is_err() {
+                eprintln!("Screen-reader action channel is closed");
+            }
+        });
+        let tree = self.accessibility_tree(window);
+        if self.a11y_cache.as_ref() != Some(&tree) {
+            self.a11y_cache = Some(tree.clone());
+            window.update_accessibility_tree(tree);
+        }
         if self.screen != Screen::Design || !self.timeline_open {
             self.animation.pause();
         }
@@ -1416,6 +2278,15 @@ impl Render for Shell {
         if self.animation.is_playing() {
             window.request_animation_frame();
         }
+        let now = Instant::now();
+        if self.screen == Screen::Preview && self.prototype_preview.has_transition() {
+            self.generation += 1;
+            if self.prototype_preview.is_animating(now) {
+                window.request_animation_frame();
+            } else {
+                self.prototype_preview.finish_transition(now);
+            }
+        }
         let title = format!("{} — {}", self.title(), strings::APP_NAME);
         if title != self.window_title {
             window.set_window_title(&title);
@@ -1426,6 +2297,8 @@ impl Render for Shell {
         let content = match self.screen {
             Screen::Documents => self.documents(&palette, cx),
             Screen::Design => self.workspace(mode, &palette, cx),
+            Screen::Preview => self.preview(mode, &palette, cx),
+            Screen::Import => self.import_screen(&palette, cx),
             Screen::Preferences => self.preferences(&palette, cx),
             screen => self.pending(screen, &palette),
         };

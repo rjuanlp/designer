@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add Windows live MCP attachment with `--connect`/`--pipe`, capability discovery,
+  bounded local pipe clients and drag/prompt mutation rejection.
+- Hold OS advisory sidecar locks for file-backed sessions, including headless MCP.
+- Extract a pure AccessKit tree builder, add all-screen semantics, focus actions
+  and unchanged-tree caching. Manual screen-reader validation remains pending.
+
 - Establish an MIT-licensed Rust workspace and English project documentation.
 - Add deterministic Vello feasibility-scene construction and input tests.
 - Record the required graphics gate and explicitly unimplemented editor features.
@@ -29,5 +35,12 @@
   same-topology morph keyframes on page and sequence timelines.
 - Write the updated `.dsg` path/morph schema as version 2 while continuing to
   read version 1 documents.
+- Write the interactive prototype-state model as `.dsg` schema version 3 while
+  retaining readers for versions 1 and 2.
+- Add hover/click prototype states and a transition preview in S05.
+- Add a structured Figma JSON importer with explicit loss reports and safe
+  handling of unsupported or over-limit content.
+- Add a headless `designer-mcp` stdio server with revision-checked atomic
+  transactions, save/import/history tools and evaluated still snapshots.
 
 There is no released editor binary.

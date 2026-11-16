@@ -9,6 +9,7 @@
 mod animation;
 mod command;
 mod model;
+mod prototype;
 mod sample;
 
 pub use animation::{
@@ -19,5 +20,10 @@ pub use command::{CommandError, MAX_NAME_CHARS, MAX_OPERATIONS, MAX_TEXT_CHARS, 
 pub use model::{
     Color, Document, MAX_PATH_SEGMENTS, ModelError, Node, NodeId, NodeKind, Page, PageId, PathData,
     PathPoint, PathSegment, Rect,
+};
+pub use prototype::{
+    DEFAULT_PROTOTYPE_DURATION_MS, FillOverride, INITIAL_STATE, MAX_NODE_OVERRIDES,
+    MAX_PROTOTYPE_STATES, MAX_PROTOTYPE_TRANSITIONS, NodeOverride, Prototype, PrototypeState,
+    PrototypeStateId, PrototypeTransition, PrototypeTrigger, interpolate_prototype_pages,
 };
 pub use sample::sample_document;

@@ -51,12 +51,9 @@ impl Screen {
     /// What the section will do, shown while it is not implemented.
     pub fn pending_description(self) -> &'static str {
         match self {
-            Self::Documents | Self::Design | Self::Preferences => "",
+            Self::Documents | Self::Design | Self::Preview | Self::Preferences => "",
             Self::Components => {
                 "Aquí vivirán los componentes, las variantes y los estilos locales del documento."
-            }
-            Self::Preview => {
-                "Aquí se probarán los estados y las transiciones interactivas del diseño."
             }
             Self::Import => {
                 "Aquí se importarán paquetes de datos estructurados y se mostrará el informe de pérdidas."
@@ -175,6 +172,8 @@ pub const SHOW_TIMELINE: &str = "Mostrar línea de tiempo";
 pub const HIDE_TIMELINE: &str = "Ocultar línea de tiempo";
 pub const NO_ANIMATIONS: &str = "Este documento todavía no tiene animaciones.";
 pub const PLAY: &str = "Reproducir";
+/// Stable playback announcement while the clock is running.
+pub const PLAYING: &str = "Reproduciendo";
 pub const PAUSE: &str = "Pausar";
 pub const BASE_VALUES: &str = "Editar base";
 pub const TIME_BACK: &str = "−100 ms";
@@ -200,6 +199,51 @@ pub const ANIMATION_EDIT_HINT: &str =
 pub const MAIN_SEQUENCE: &str = "Principal";
 pub const ADD_SEQUENCE: &str = "Añadir secuencia";
 pub const REMOVE_SEQUENCE: &str = "Quitar secuencia";
+pub const PREVIEW_HELP: &str =
+    "Prueba los estados sobre el lienzo. Selecciona una capa en Diseño para crear interacciones.";
+pub const PROTOTYPE_STATES: &str = "Estados interactivos";
+pub const CREATE_HOVER_STATE: &str = "Crear estado al pasar";
+pub const CREATE_CLICK_STATE: &str = "Crear estado al pulsar";
+pub const NO_PROTOTYPE_STATES: &str = "Añade un estado desde una capa seleccionada.";
+pub const SELECTED_LAYER: &str = "Capa seleccionada";
+pub const NO_SELECTED_LAYER: &str = "Ninguna";
+pub const PROTOTYPE_LAYERS: &str = "Capas para interacción";
+pub const PREVIEW_INITIAL: &str = "Inicial";
+pub const PREVIEW_SELECT_NODE: &str = "Selecciona una capa en el panel para crear su interacción.";
+pub const PROTOTYPE_STATE_LIMIT: &str = "No se pueden crear más estados en esta página.";
+pub const PROTOTYPE_TRIGGER_EXISTS: &str =
+    "Esta capa ya tiene una interacción para ese disparador desde el estado inicial.";
+pub const PROTOTYPE_STATE_CREATED: &str = "Se añadió el estado interactivo.";
+pub const PROTOTYPE_STATE_REMOVED: &str = "Se quitó el estado interactivo.";
+pub const REMOVE_PROTOTYPE_STATE: &str = "Quitar estado activo";
+pub const IMPORT_DESCRIPTION: &str =
+    "Carga JSON estructurado de Figma. Revisa las pérdidas antes de abrirlo como documento.";
+pub const IMPORT_PICK_FILE: &str = "Elegir archivo JSON";
+pub const IMPORT_APPLY: &str = "Abrir como documento";
+pub const IMPORT_LOADING: &str = "Leyendo y validando el archivo…";
+pub const IMPORT_NO_RESULT: &str = "Selecciona un archivo JSON estructurado para empezar.";
+pub const IMPORT_REPORT: &str = "Informe de migración";
+pub const IMPORT_WARNINGS: &str = "Elementos que requieren revisión";
+pub const IMPORT_NO_WARNINGS: &str = "No se detectaron pérdidas en los elementos importados.";
+pub fn import_more_warnings(count: usize) -> String {
+    format!("Se muestran los primeros 100 de {count} avisos.")
+}
+
+pub fn import_omitted_warnings(count: usize) -> String {
+    format!("No se muestran los detalles de otros {count} avisos por el límite del informe.")
+}
+
+pub fn import_summary(nodes: usize, warnings: usize) -> String {
+    format!("{nodes} capas preparadas · {warnings} avisos")
+}
+
+pub fn import_applied(nodes: usize, warnings: usize) -> String {
+    format!("Documento importado: {nodes} capas · {warnings} avisos")
+}
+
+pub fn import_failed(error: &dyn Display) -> String {
+    format!("No se pudo importar el archivo. Detalle: {error}")
+}
 
 pub fn property_label(property: designer_core::Property) -> &'static str {
     use designer_core::Property;
@@ -239,6 +283,7 @@ pub fn easing_label(easing: designer_core::Easing) -> &'static str {
 pub const TOOL_PENDING: &str = "Las herramientas Texto y Pluma todavía no crean capas.";
 pub const UNDO: &str = "Deshacer";
 pub const REDO: &str = "Rehacer";
+pub const DELETE_SELECTION: &str = "Eliminar capa seleccionada";
 pub const SAVE: &str = "Guardar";
 
 pub const CANVAS_UNAVAILABLE: &str = "No se puede mostrar el lienzo";
@@ -267,12 +312,18 @@ pub fn saved(path: Option<&Path>) -> String {
 }
 
 /// Status after a failed save. The technical reason is kept in English.
-pub fn save_failed(error: &dyn Display) -> String {
+pub fn save_failed(error: &designer_engine::dsg::DsgError) -> String {
+    if matches!(error, designer_engine::dsg::DsgError::Locked { .. }) {
+        return DOCUMENT_LOCKED.to_owned();
+    }
     format!("No se pudo guardar; el archivo anterior no ha cambiado. Detalle: {error}")
 }
 
 /// Status after a file could not be opened.
-pub fn open_failed(path: &Path, error: &dyn Display) -> String {
+pub fn open_failed(path: &Path, error: &designer_engine::dsg::DsgError) -> String {
+    if matches!(error, designer_engine::dsg::DsgError::Locked { .. }) {
+        return DOCUMENT_LOCKED.to_owned();
+    }
     format!("No se pudo abrir {}. Detalle: {error}", path.display())
 }
 
@@ -296,7 +347,15 @@ pub const GRAPHICS: &str = "Gráficos";
 pub const GRAPHICS_ADAPTER: &str = "Adaptador";
 pub const GRAPHICS_UNAVAILABLE: &str = "No disponible";
 pub const AGENTS: &str = "Agentes";
-pub const AGENTS_PENDING: &str = "La conexión con agentes (MCP) todavía no está implementada.";
+pub const AGENTS_PENDING: &str =
+    "Los clientes MCP locales pueden conectarse a la sesión abierta de Designer.";
+pub const MCP_UPDATED: &str = "El documento se actualizó desde un cliente MCP.";
+
+pub fn mcp_server_failed(error: &dyn Display) -> String {
+    format!(
+        "Otra ventana de Designer ya tiene la conexión MCP en vivo, o no se pudo iniciar el puente local. Detalle: {error}"
+    )
+}
 pub const SHORTCUTS: &str = "Atajos";
 pub const SHORTCUT_LIST: [(&str, &str); 11] = [
     ("Ctrl+N", "Nuevo documento"),
@@ -311,6 +370,15 @@ pub const SHORTCUT_LIST: [(&str, &str); 11] = [
     ("Ctrl+T", "Mostrar u ocultar la línea de tiempo"),
     ("Ctrl+Mayús+L", "Cambiar entre tema claro y oscuro"),
 ];
+
+/// Accessibility navigation group.
+pub const SECTIONS: &str = "Secciones";
+/// Accessibility toolbar group.
+pub const TOOLS_ACTIONS: &str = "Herramientas y acciones";
+
+/// Document lock error.
+pub const DOCUMENT_LOCKED: &str =
+    "Otro proceso tiene abierto este documento. Cierra esa sesión antes de abrirlo o guardarlo.";
 
 #[cfg(test)]
 mod tests {
@@ -334,7 +402,7 @@ mod tests {
         for screen in Screen::ALL {
             let implemented = matches!(
                 screen,
-                Screen::Documents | Screen::Design | Screen::Preferences
+                Screen::Documents | Screen::Design | Screen::Preview | Screen::Preferences
             );
             assert_eq!(screen.pending_description().is_empty(), implemented);
         }

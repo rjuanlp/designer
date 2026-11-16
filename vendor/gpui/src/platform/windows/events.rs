@@ -105,6 +105,7 @@ impl WindowsWindowInner {
             WM_SETTINGCHANGE => self.handle_system_settings_changed(handle, wparam, lparam),
             WM_INPUTLANGCHANGE => self.handle_input_language_changed(),
             WM_SHOWWINDOW => self.handle_window_visibility_changed(handle, wparam),
+            WM_GETOBJECT => self.handle_wm_getobject(wparam, lparam),
             WM_GPUI_CURSOR_STYLE_CHANGED => self.handle_cursor_changed(lparam),
             WM_GPUI_FORCE_UPDATE_WINDOW => self.draw_window(handle, true),
             WM_GPUI_GPU_DEVICE_LOST => self.handle_device_lost(lparam),
@@ -746,8 +747,32 @@ impl WindowsWindowInner {
         Some(0)
     }
 
+    fn handle_wm_getobject(&self, wparam: WPARAM, lparam: LPARAM) -> Option<isize> {
+        let result = {
+            let mut state = self.state.borrow_mut();
+            let a11y = state.a11y.as_mut()?;
+            a11y.adapter.handle_wm_getobject(
+                accesskit_windows::WPARAM(wparam.0),
+                accesskit_windows::LPARAM(lparam.0),
+                &mut a11y.activation_handler,
+            )?
+        };
+        let result: accesskit_windows::LRESULT = result.into();
+        Some(result.0)
+    }
+
     fn handle_activate_msg(self: &Rc<Self>, wparam: WPARAM) -> Option<isize> {
         let activated = wparam.loword() > 0;
+        let accessibility_events = {
+            let mut state = self.state.borrow_mut();
+            state
+                .a11y
+                .as_mut()
+                .and_then(|a11y| a11y.adapter.update_window_focus_state(activated))
+        };
+        if let Some(events) = accessibility_events {
+            events.raise();
+        }
         let this = self.clone();
         self.executor
             .spawn(async move {

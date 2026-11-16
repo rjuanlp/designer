@@ -821,6 +821,7 @@ pub struct Window {
     pub(crate) invalidator: WindowInvalidator,
     pub(crate) removed: bool,
     pub(crate) platform_window: Box<dyn PlatformWindow>,
+    accessibility_initialized: bool,
     display_id: Option<DisplayId>,
     sprite_atlas: Arc<dyn PlatformAtlas>,
     text_system: Arc<WindowTextSystem>,
@@ -1209,6 +1210,7 @@ impl Window {
             invalidator,
             removed: false,
             platform_window,
+            accessibility_initialized: false,
             display_id,
             sprite_atlas,
             text_system,
@@ -1301,6 +1303,26 @@ impl ContentMask<Pixels> {
 }
 
 impl Window {
+    /// Initialize the platform accessibility adapter once for this window.
+    pub fn init_accessibility(
+        &mut self,
+        action_handler: impl Fn(accesskit::ActionRequest) + Send + 'static,
+    ) {
+        if self.accessibility_initialized {
+            return;
+        }
+        self.platform_window
+            .init_accessibility(Box::new(action_handler));
+        self.accessibility_initialized = true;
+    }
+
+    /// Update the semantic tree exposed to platform assistive technology.
+    pub fn update_accessibility_tree(&mut self, tree: accesskit::TreeUpdate) {
+        if self.accessibility_initialized {
+            self.platform_window.update_accessibility_tree(tree);
+        }
+    }
+
     fn mark_view_dirty(&mut self, view_id: EntityId) {
         // Mark ancestor views as dirty. If already in the `dirty_views` set, then all its ancestors
         // should already be dirty.

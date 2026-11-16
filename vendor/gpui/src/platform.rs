@@ -500,6 +500,12 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn draw(&self, scene: &Scene);
     fn completed_frame(&self) {}
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
+    fn init_accessibility(
+        &mut self,
+        _action_handler: Box<dyn Fn(accesskit::ActionRequest) + Send + 'static>,
+    ) {
+    }
+    fn update_accessibility_tree(&mut self, _tree: accesskit::TreeUpdate) {}
 
     // macOS specific methods
     fn get_title(&self) -> String {
