@@ -1,0 +1,31 @@
+[package]
+name = "designer-gpu-bridge"
+description = "Shares Vello render targets with a Direct3D 11 compositor without CPU readback"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# This is the only crate allowed to contain unsafe code. Every unsafe block
+# must state the invariant it relies on.
+[lints.rust]
+unsafe_code = "allow"
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "warn"
+undocumented_unsafe_blocks = "deny"
+
+[target.'cfg(windows)'.dependencies]
+vello.workspace = true
+windows.workspace = true
+
+[dev-dependencies]
+designer-render = { path = "../designer-render" }
+pollster.workspace = true
+anyhow.workspace = true
+log = "0.4"
+
+[target.'cfg(windows)'.dev-dependencies]
+gpui.workspace = true

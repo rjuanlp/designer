@@ -1,7 +1,7 @@
 id,surface,feature,clone,note
 F001,S00,Rust workspace,partial,Locked build and verify script pass locally on Windows/MSVC; CI not yet run
-F002,S00,Vello probe scene,partial,Offscreen DX12 rendering verified on hardware; presentation inside GPUI unverified
-F003,S00,GPUI texture composition,no,Required gate before expanding editor
+F002,S00,Vello probe scene,partial,Offscreen and in-GPUI rendering verified on one machine; scene is a two-shape probe only
+F003,S00,GPUI texture composition,partial,Works on one NVIDIA machine via shared textures and a GPUI patch; alpha/DPI/device loss/hybrid GPU unvalidated
 F004,S01,DSG persistence and recovery,no,Draft format only
 F005,S02,Vector editing and history,no,Planned
 F006,S02,Typography and images,no,Planned

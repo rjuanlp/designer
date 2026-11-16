@@ -19,6 +19,10 @@ try {
         if ($Gpu) {
             & cargo run --locked -p designer-render --example gpu_probe
             if ($LASTEXITCODE -ne 0) { throw 'GPU smoke test failed.' }
+            & cargo test --locked -p designer-gpu-bridge -- --ignored
+            if ($LASTEXITCODE -ne 0) { throw 'GPU bridge contract tests failed.' }
+            & cargo run --locked -p designer-gpu-bridge --example composited_probe -- --frames 300
+            if ($LASTEXITCODE -ne 0) { throw 'Composited probe failed.' }
         }
     } finally { $env:RUSTDOCFLAGS = $previousRustdocFlags }
 } finally { Pop-Location }

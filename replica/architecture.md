@@ -3,8 +3,11 @@
 ## Graphics gate (ADR-001)
 
 GPUI is the only UI framework. Vello is the canvas renderer. The Windows bridge
-is planned as DX12/D3D11On12 texture composition, with retained resource lifetimes
-and explicit synchronization. A CPU-readback image upload is not an accepted
+shares Direct3D 12 textures with GPUI's Direct3D 11 renderer through NT handles,
+with retained resource lifetimes and fence-based synchronization. D3D11On12 was
+the original plan; shared handles replaced it because GPUI and wgpu link
+different `windows` crate versions and cannot exchange COM types (see
+[GPU interop](../docs/gpu-interop.md)). A CPU-readback image upload is not an accepted
 interactive rendering implementation.
 
 The upstream external compositor is experimental:
@@ -12,8 +15,11 @@ https://github.com/zed-industries/zed/discussions/60572
 
 Before S01-S07, validate clipping, alpha, popup occlusion, resize, DPI changes,
 minimize/restore, device loss and no per-frame readback. Record an exact GPUI
-revision, every local patch, upstream license, and GPU evidence. The current
-repository does not contain that bridge or a claim that it works.
+revision, every local patch, upstream license, and GPU evidence. The bridge
+(`designer-gpu-bridge` plus the patch in `vendor/gpui`) passes clipping,
+in-window occlusion, resize, minimize/restore and no-readback checks on one
+machine. Translucent content, popup occlusion, DPI changes, device loss and
+hybrid-GPU adapter matching are still unvalidated, so the gate stays open.
 
 ## Target process model (ADR-002)
 
@@ -31,8 +37,8 @@ library; playback does not create history entries. Queues are bounded.
 
 Document, geometry/layout, commands/history, animation, persistence/import,
 rendering, GPUI interface, IPC and MCP remain independent modules. The core does
-not depend on GPUI or GPU availability. Unsafe code is forbidden outside a
-future isolated native graphics bridge whose invariants must be documented.
+not depend on GPUI or GPU availability. Unsafe code is forbidden outside
+`designer-gpu-bridge`, where every unsafe block must document its invariant.
 
 ## Delivery order
 

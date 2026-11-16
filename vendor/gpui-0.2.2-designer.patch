@@ -1,0 +1,413 @@
+diff -ruN -x examples -x Cargo.lock -x .cargo-ok -x Cargo.toml gpui-0.2.2/src/platform/windows/directx_renderer.rs gpui/src/platform/windows/directx_renderer.rs
+--- gpui-0.2.2/src/platform/windows/directx_renderer.rs	2006-07-23 22:21:28.000000000 -0300
++++ gpui/src/platform/windows/directx_renderer.rs	2026-11-16 02:14:21.290144300 -0300
+@@ -45,6 +45,8 @@
+     pipelines: DirectXRenderPipelines,
+     direct_composition: Option<DirectComposition>,
+     font_info: &'static FontInfo,
++    // DESIGNER PATCH
++    external_textures: super::external_texture::ExternalTextureCache,
+ }
+ 
+ /// Direct3D objects
+@@ -164,6 +166,8 @@
+             pipelines,
+             direct_composition,
+             font_info: Self::get_font_info(),
++            // DESIGNER PATCH
++            external_textures: Default::default(),
+         })
+     }
+ 
+@@ -232,6 +236,8 @@
+                 .context("Failed to report live objects after device lost")
+                 .log_err();
+ 
++            // DESIGNER PATCH: shared objects belong to the lost device.
++            self.external_textures.clear();
+             ManuallyDrop::drop(&mut self.resources);
+             self.devices.device_context.OMSetRenderTargets(None, None);
+             self.devices.device_context.ClearState();
+@@ -285,6 +291,8 @@
+ 
+     pub(crate) fn draw(&mut self, scene: &Scene) -> Result<()> {
+         self.pre_draw()?;
++        // DESIGNER PATCH
++        self.external_textures.begin_frame();
+         for batch in scene.batches() {
+             match batch {
+                 PrimitiveBatch::Shadows(shadows) => self.draw_shadows(shadows),
+@@ -312,6 +320,8 @@
+                     scene.polychrome_sprites.len(),
+                     scene.surfaces.len(),))?;
+         }
++        // DESIGNER PATCH
++        self.external_textures.end_frame();
+         self.present()
+     }
+ 
+@@ -570,12 +580,74 @@
+     }
+ 
+     fn draw_surfaces(&mut self, surfaces: &[PaintSurface]) -> Result<()> {
+-        if surfaces.is_empty() {
+-            return Ok(());
++        // DESIGNER PATCH (begin): composite shared textures with the polychrome
++        // sprite pipeline, one draw call per surface, in scene order.
++        for surface in surfaces {
++            if let Err(error) = self.draw_external_texture(surface) {
++                if self
++                    .external_textures
++                    .should_report_failure(surface.texture.id)
++                {
++                    log::error!("Skipping external texture {}: {error:#}", surface.texture.id);
++                }
++            }
+         }
+         Ok(())
+     }
+ 
++    fn draw_external_texture(&mut self, surface: &PaintSurface) -> Result<()> {
++        let prepared = self.external_textures.prepare(
++            &self.devices.device,
++            &self.devices.device_context,
++            &surface.texture,
++        )?;
++        let sprite = PolychromeSprite {
++            order: 0,
++            pad: 0,
++            grayscale: false,
++            opacity: 1.0,
++            bounds: surface.bounds,
++            content_mask: surface.content_mask.clone(),
++            corner_radii: Corners::default(),
++            // The shader divides these texel bounds by the bound texture size,
++            // so the full texture maps onto the surface bounds.
++            tile: AtlasTile {
++                texture_id: AtlasTextureId {
++                    index: 0,
++                    kind: AtlasTextureKind::Polychrome,
++                },
++                tile_id: TileId(0),
++                padding: 0,
++                bounds: Bounds {
++                    origin: Point::default(),
++                    size: Size {
++                        width: DevicePixels(prepared.width as i32),
++                        height: DevicePixels(prepared.height as i32),
++                    },
++                },
++            },
++        };
++        self.pipelines.poly_sprites.update_buffer(
++            &self.devices.device,
++            &self.devices.device_context,
++            &[sprite],
++        )?;
++        self.pipelines.poly_sprites.draw_with_texture(
++            &self.devices.device_context,
++            &prepared.view,
++            &self.resources.viewport,
++            &self.globals.global_params_buffer,
++            &self.globals.sampler,
++            1,
++        )?;
++        self.external_textures.finish(
++            &self.devices.device,
++            &self.devices.device_context,
++            &surface.texture,
++        )
++    }
++    // DESIGNER PATCH (end)
++
+     pub(crate) fn gpu_specs(&self) -> Result<GpuSpecs> {
+         let desc = unsafe { self.devices.adapter.GetDesc1() }?;
+         let is_software_emulated = (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0;
+diff -ruN -x examples -x Cargo.lock -x .cargo-ok -x Cargo.toml gpui-0.2.2/src/platform/windows/external_texture.rs gpui/src/platform/windows/external_texture.rs
+--- gpui-0.2.2/src/platform/windows/external_texture.rs	1969-12-31 21:00:00.000000000 -0300
++++ gpui/src/platform/windows/external_texture.rs	2026-11-16 02:14:19.480103400 -0300
+@@ -0,0 +1,179 @@
++//! DESIGNER PATCH: opens textures and fences shared by another Direct3D device
++//! so the window renderer can sample them in scene order.
++//!
++//! This file is not part of upstream GPUI 0.2.2. See `vendor/README.md` in the
++//! Designer repository.
++
++use anyhow::{Context, Result};
++use collections::{FxHashMap, FxHashSet};
++use windows::{
++    Win32::{Foundation::HANDLE, Graphics::Direct3D11::*},
++    core::Interface,
++};
++
++use crate::{ExternalFencePoint, ExternalTexture};
++
++/// Opened objects are released after this many frames without being painted.
++const UNUSED_FRAMES_BEFORE_RELEASE: u64 = 120;
++/// Upper bound for remembered failures, so a misbehaving producer cannot grow
++/// the set without limit.
++const MAX_REPORTED_FAILURES: usize = 1024;
++
++struct OpenedTexture {
++    view: [Option<ID3D11ShaderResourceView>; 1],
++    width: u32,
++    height: u32,
++    last_used: u64,
++}
++
++struct OpenedFence {
++    fence: ID3D11Fence,
++    last_used: u64,
++}
++
++/// A texture view that is ready to be bound, with its real dimensions.
++pub(crate) struct PreparedExternalTexture {
++    pub(crate) view: [Option<ID3D11ShaderResourceView>; 1],
++    pub(crate) width: u32,
++    pub(crate) height: u32,
++}
++
++#[derive(Default)]
++pub(crate) struct ExternalTextureCache {
++    frame: u64,
++    textures: FxHashMap<u64, OpenedTexture>,
++    fences: FxHashMap<u64, OpenedFence>,
++    reported_failures: FxHashSet<u64>,
++}
++
++impl ExternalTextureCache {
++    pub(crate) fn begin_frame(&mut self) {
++        self.frame += 1;
++    }
++
++    /// Release objects that were not painted recently.
++    pub(crate) fn end_frame(&mut self) {
++        let frame = self.frame;
++        let is_recent = |last_used: u64| last_used + UNUSED_FRAMES_BEFORE_RELEASE >= frame;
++        self.textures.retain(|_, texture| is_recent(texture.last_used));
++        self.fences.retain(|_, fence| is_recent(fence.last_used));
++    }
++
++    /// Drop every opened object. They belong to a device, so this must run
++    /// before that device is released after a device loss.
++    pub(crate) fn clear(&mut self) {
++        self.textures.clear();
++        self.fences.clear();
++        self.reported_failures.clear();
++    }
++
++    /// Returns true the first time a failure for `id` is seen, so callers log
++    /// a broken texture once instead of on every frame.
++    pub(crate) fn should_report_failure(&mut self, id: u64) -> bool {
++        if self.reported_failures.len() >= MAX_REPORTED_FAILURES {
++            self.reported_failures.clear();
++        }
++        self.reported_failures.insert(id)
++    }
++
++    /// Open (or reuse) the shared texture and queue the producer wait.
++    pub(crate) fn prepare(
++        &mut self,
++        device: &ID3D11Device,
++        device_context: &ID3D11DeviceContext,
++        texture: &ExternalTexture,
++    ) -> Result<PreparedExternalTexture> {
++        let frame = self.frame;
++        if !self.textures.contains_key(&texture.id) {
++            let opened = open_texture(device, texture.shared_handle, frame)?;
++            self.textures.insert(texture.id, opened);
++        }
++        if let Some(point) = &texture.wait {
++            let fence = self.fence(device, point)?;
++            let context: ID3D11DeviceContext4 = device_context
++                .cast()
++                .context("Direct3D 11.3 context is required for shared fences")?;
++            // Queues a GPU-side wait: later commands on this context run only
++            // after the producer has signaled. The CPU does not block here.
++            unsafe { context.Wait(&fence, point.value) }
++                .context("Queueing wait on shared fence")?;
++        }
++        let opened = self
++            .textures
++            .get_mut(&texture.id)
++            .context("External texture disappeared from the cache")?;
++        opened.last_used = frame;
++        Ok(PreparedExternalTexture {
++            view: opened.view.clone(),
++            width: opened.width,
++            height: opened.height,
++        })
++    }
++
++    /// Queue the consumer signal after the sampling draw call.
++    pub(crate) fn finish(
++        &mut self,
++        device: &ID3D11Device,
++        device_context: &ID3D11DeviceContext,
++        texture: &ExternalTexture,
++    ) -> Result<()> {
++        let Some(point) = &texture.signal else {
++            return Ok(());
++        };
++        let fence = self.fence(device, point)?;
++        let context: ID3D11DeviceContext4 = device_context
++            .cast()
++            .context("Direct3D 11.3 context is required for shared fences")?;
++        unsafe { context.Signal(&fence, point.value) }.context("Queueing signal on shared fence")
++    }
++
++    fn fence(&mut self, device: &ID3D11Device, point: &ExternalFencePoint) -> Result<ID3D11Fence> {
++        let frame = self.frame;
++        if let Some(opened) = self.fences.get_mut(&point.fence_id) {
++            opened.last_used = frame;
++            return Ok(opened.fence.clone());
++        }
++        let device: ID3D11Device5 = device
++            .cast()
++            .context("Direct3D 11.4 device is required for shared fences")?;
++        let mut fence: Option<ID3D11Fence> = None;
++        // The handle is only read by the kernel, which validates it; an invalid
++        // or wrongly typed handle produces an error instead of undefined behavior.
++        unsafe { device.OpenSharedFence(handle(point.shared_handle), &mut fence) }
++            .context("Opening shared fence")?;
++        let fence = fence.context("Shared fence was not returned")?;
++        self.fences.insert(
++            point.fence_id,
++            OpenedFence {
++                fence: fence.clone(),
++                last_used: frame,
++            },
++        );
++        Ok(fence)
++    }
++}
++
++fn handle(raw: isize) -> HANDLE {
++    HANDLE(raw as *mut core::ffi::c_void)
++}
++
++fn open_texture(device: &ID3D11Device, shared_handle: isize, frame: u64) -> Result<OpenedTexture> {
++    let device: ID3D11Device1 = device
++        .cast()
++        .context("Direct3D 11.1 device is required for shared textures")?;
++    // The handle is only read by the kernel, which validates it; an invalid or
++    // wrongly typed handle produces an error instead of undefined behavior.
++    let texture: ID3D11Texture2D = unsafe { device.OpenSharedResource1(handle(shared_handle)) }
++        .context("Opening shared texture (is it on the same adapter?)")?;
++    let mut desc = D3D11_TEXTURE2D_DESC::default();
++    unsafe { texture.GetDesc(&mut desc) };
++    let mut view = None;
++    unsafe { device.CreateShaderResourceView(&texture, None, Some(&mut view)) }
++        .context("Creating view for shared texture")?;
++    Ok(OpenedTexture {
++        view: [view],
++        width: desc.Width,
++        height: desc.Height,
++        last_used: frame,
++    })
++}
+diff -ruN -x examples -x Cargo.lock -x .cargo-ok -x Cargo.toml gpui-0.2.2/src/platform/windows.rs gpui/src/platform/windows.rs
+--- gpui-0.2.2/src/platform/windows.rs	2006-07-23 22:21:28.000000000 -0300
++++ gpui/src/platform/windows.rs	2026-11-16 02:14:21.288147900 -0300
+@@ -7,6 +7,8 @@
+ mod dispatcher;
+ mod display;
+ mod events;
++// DESIGNER PATCH
++mod external_texture;
+ mod keyboard;
+ mod platform;
+ mod system_settings;
+diff -ruN -x examples -x Cargo.lock -x .cargo-ok -x Cargo.toml gpui-0.2.2/src/scene.rs gpui/src/scene.rs
+--- gpui-0.2.2/src/scene.rs	2006-07-23 22:21:28.000000000 -0300
++++ gpui/src/scene.rs	2026-11-16 02:13:30.218340700 -0300
+@@ -660,8 +660,52 @@
+     pub content_mask: ContentMask<ScaledPixels>,
+     #[cfg(target_os = "macos")]
+     pub image_buffer: core_video::pixel_buffer::CVPixelBuffer,
++    // DESIGNER PATCH: Windows external GPU texture.
++    #[cfg(target_os = "windows")]
++    pub texture: ExternalTexture,
+ }
+ 
++// DESIGNER PATCH (begin): Windows external GPU texture description.
++
++/// A point on a shared GPU fence, used to order work between another graphics
++/// device and the window's Direct3D 11 device without blocking the CPU.
++#[cfg(target_os = "windows")]
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct ExternalFencePoint {
++    /// Identity of the fence object. A new fence must use a new id, even if
++    /// the operating system reuses the numeric handle value.
++    pub fence_id: u64,
++    /// NT shared handle of a fence created with sharing enabled.
++    pub shared_handle: isize,
++    /// Fence value to wait for or to signal.
++    pub value: u64,
++}
++
++/// A texture produced by another graphics device on the same adapter and
++/// shared through an NT handle, to be composited in element paint order.
++///
++/// The handles stay owned by the caller and must remain open until the frame
++/// that paints them has been drawn. The renderer keeps its own references to
++/// the opened objects and releases them when they stop being painted.
++#[cfg(target_os = "windows")]
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct ExternalTexture {
++    /// Identity of the texture object. A new texture must use a new id, even
++    /// if the operating system reuses the numeric handle value.
++    pub id: u64,
++    /// NT shared handle of a 2D texture that allows shader sampling. Color is
++    /// sampled as sRGB-encoded, non-premultiplied RGBA.
++    pub shared_handle: isize,
++    /// The producer signals this point when the texture content is complete;
++    /// the renderer queues a GPU-side wait for it before sampling.
++    pub wait: Option<ExternalFencePoint>,
++    /// The renderer signals this point after its sampling draw call, so the
++    /// producer knows when the texture may be written again.
++    pub signal: Option<ExternalFencePoint>,
++}
++
++// DESIGNER PATCH (end)
++
+ impl From<PaintSurface> for Primitive {
+     fn from(surface: PaintSurface) -> Self {
+         Primitive::Surface(surface)
+diff -ruN -x examples -x Cargo.lock -x .cargo-ok -x Cargo.toml gpui-0.2.2/src/window.rs gpui/src/window.rs
+--- gpui-0.2.2/src/window.rs	2006-07-23 22:21:28.000000000 -0300
++++ gpui/src/window.rs	2026-11-16 02:13:32.133814200 -0300
+@@ -3194,6 +3194,33 @@
+         });
+     }
+ 
++    // DESIGNER PATCH (begin)
++    /// Paint a texture shared by another graphics device into the scene for the
++    /// next frame at the current z-index, clipped by the current content mask.
++    ///
++    /// This method should only be called as part of the paint phase of element drawing.
++    #[cfg(target_os = "windows")]
++    pub fn paint_external_texture(
++        &mut self,
++        bounds: Bounds<Pixels>,
++        texture: crate::ExternalTexture,
++    ) {
++        use crate::PaintSurface;
++
++        self.invalidator.debug_assert_paint();
++
++        let scale_factor = self.scale_factor();
++        let bounds = bounds.scale(scale_factor);
++        let content_mask = self.content_mask().scale(scale_factor);
++        self.next_frame.scene.insert_primitive(PaintSurface {
++            order: 0,
++            bounds,
++            content_mask,
++            texture,
++        });
++    }
++    // DESIGNER PATCH (end)
++
+     /// Removes an image from the sprite atlas.
+     pub fn drop_image(&mut self, data: Arc<RenderImage>) -> Result<()> {
+         for frame_index in 0..data.frame_count() {

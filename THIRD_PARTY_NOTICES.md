@@ -12,5 +12,7 @@ Cargo.lock, verify licenses of transitive dependencies and embedded fonts/assets
 and include the required license texts and notices in the package. This initial
 list is not a completed binary-distribution audit.
 
-Any future GPUI patch must retain its upstream license and identify the source
-revision and local modifications. No upstream GPUI source is vendored yet.
+A patched copy of GPUI 0.2.2 is vendored in `vendor/gpui` under its original
+Apache-2.0 license (`vendor/gpui/LICENSE-APACHE`). `vendor/README.md` identifies
+the upstream source and lists every local modification; changed regions are
+marked `DESIGNER PATCH` in the source.

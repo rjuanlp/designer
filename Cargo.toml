@@ -1,5 +1,7 @@
 [workspace]
-members = ["crates/designer-render"]
+members = ["crates/designer-render", "crates/designer-gpu-bridge"]
+# Patched third-party source; built as a dependency, never linted as our code.
+exclude = ["vendor/gpui"]
 resolver = "3"
 
 [workspace.package]
@@ -11,8 +13,22 @@ publish = false
 [workspace.dependencies]
 vello = "=0.12.0"
 gpui = { version = "=0.2.2", default-features = false, features = ["windows-manifest"] }
+# Must stay on the same minor version as the one wgpu-hal links, because the
+# bridge passes its COM interface types to wgpu.
+windows = { version = "0.62", default-features = false, features = [
+    "std",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi_Common",
+] }
 pollster = "0.4"
 anyhow = "1"
+
+# GPUI 0.2.2 plus the Windows external-texture patch described in
+# vendor/README.md. Remove once upstream can composite a GPU texture.
+[patch.crates-io]
+gpui = { path = "vendor/gpui" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

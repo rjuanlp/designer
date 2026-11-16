@@ -40,11 +40,17 @@ composition correctness, accessibility, or frame pacing.
 ```powershell
 cargo run --locked -p designer-render --example gpu_probe
 cargo run --locked -p designer-render --example gpui_probe
+cargo run --locked -p designer-gpu-bridge --example composited_probe
 ```
 
 The first probe submits 120 offscreen Vello frames on a hardware DX12 adapter.
-It is not a frame-rate benchmark. The second opens a GPUI window but does not
-composite Vello. Neither alone satisfies the integrated graphics gate.
+The second opens a plain GPUI window. The third composites animated Vello
+content inside a GPUI window through shared GPU textures; pass
+`-- --frames 600` to close automatically and print pacing figures for the probe
+scene. None of them is the project benchmark. See
+[GPU interop](gpu-interop.md) for what the integrated probe does and does not
+validate.
 
 Run the complete checks with `./scripts/verify.ps1`. Add `-Gpu` only on a machine
-with the required hardware. The ordinary CI job does not run a GPU smoke test.
+with the required hardware; it also runs the bridge contract tests and opens
+the composited probe window briefly. The ordinary CI job does not run a GPU smoke test.

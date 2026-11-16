@@ -7,12 +7,14 @@ the vector canvas. Native documents will use **`.dsg`**.
 ## Project status
 
 **Pre-alpha: graphics feasibility work. There is no usable editor or release yet.**
-The repository currently contains the renderer probe foundation and project
+The repository currently contains renderer probes, a Windows bridge that
+composites Vello output inside a GPUI window on one tested machine, and project
 documentation. Document editing, `.dsg` persistence and MCP are planned, not
 implemented. No 60 FPS result has been established.
 
-The project must demonstrate Vello texture composition inside GPUI without a
-per-frame CPU readback before expanding the editor. See the
+The project must finish validating Vello texture composition inside GPUI without
+a per-frame CPU readback before expanding the editor; the remaining checks are
+listed in [GPU interop](docs/gpu-interop.md). See the
 [feature matrix](replica/features.csv) and [build log](replica/build-log.md).
 
 ## Documentation
