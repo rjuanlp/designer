@@ -2,7 +2,7 @@
 //!
 //! A `.dsg` file is a ZIP archive with two UTF-8 JSON entries:
 //! `manifest.json` identifies the format and its schema version, and
-//! `document.json` holds the document. Assets, a write lock and recovery
+//! `document.json` holds the document. Sessions use OS sidecar locks. Assets and recovery
 //! snapshots are not implemented yet.
 //!
 //! A reader never publishes a document it has not validated, and a failed
@@ -48,6 +48,11 @@ struct Manifest {
 /// Why a `.dsg` file could not be read or written.
 #[derive(Debug)]
 pub enum DsgError {
+    /// Another session holds the operating-system lock.
+    Locked {
+        /// Document path supplied by the caller.
+        path: PathBuf,
+    },
     /// The file system refused the operation.
     Io(io::Error),
     /// The file is not a readable ZIP archive.
@@ -71,6 +76,11 @@ pub enum DsgError {
 impl fmt::Display for DsgError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Locked { path } => write!(
+                f,
+                "document is locked by another session: {}",
+                path.display()
+            ),
             Self::Io(error) => write!(f, "file system error: {error}"),
             Self::NotAnArchive(reason) => write!(f, "not a .dsg archive: {reason}"),
             Self::MissingEntry(name) => write!(f, "the archive has no {name}"),

@@ -661,6 +661,55 @@ impl Document {
     }
 }
 
+impl Operation {
+    /// All accepted serialized operation discriminators.
+    pub const DISCRIMINATORS: &[&str] = &[
+        "add_node",
+        "delete_node",
+        "set_bounds",
+        "set_name",
+        "set_fill",
+        "set_opacity",
+        "set_keyframe",
+        "remove_keyframe",
+        "set_morph_keyframe",
+        "remove_morph_keyframe",
+        "set_duration",
+        "set_prototype",
+        "add_sequence",
+        "remove_sequence",
+        "set_sequence_timing",
+        "set_sequence_keyframe",
+        "remove_sequence_keyframe",
+        "set_sequence_morph_keyframe",
+        "remove_sequence_morph_keyframe",
+    ];
+    /// Serialized discriminator; exhaustive so new variants require capability updates.
+    pub fn discriminator(&self) -> &'static str {
+        match self {
+            Self::AddNode { .. } => Self::DISCRIMINATORS[0],
+            Self::DeleteNode { .. } => Self::DISCRIMINATORS[1],
+            Self::SetBounds { .. } => Self::DISCRIMINATORS[2],
+            Self::SetName { .. } => Self::DISCRIMINATORS[3],
+            Self::SetFill { .. } => Self::DISCRIMINATORS[4],
+            Self::SetOpacity { .. } => Self::DISCRIMINATORS[5],
+            Self::SetKeyframe { .. } => Self::DISCRIMINATORS[6],
+            Self::RemoveKeyframe { .. } => Self::DISCRIMINATORS[7],
+            Self::SetMorphKeyframe { .. } => Self::DISCRIMINATORS[8],
+            Self::RemoveMorphKeyframe { .. } => Self::DISCRIMINATORS[9],
+            Self::SetDuration { .. } => Self::DISCRIMINATORS[10],
+            Self::SetPrototype { .. } => Self::DISCRIMINATORS[11],
+            Self::AddSequence { .. } => Self::DISCRIMINATORS[12],
+            Self::RemoveSequence { .. } => Self::DISCRIMINATORS[13],
+            Self::SetSequenceTiming { .. } => Self::DISCRIMINATORS[14],
+            Self::SetSequenceKeyframe { .. } => Self::DISCRIMINATORS[15],
+            Self::RemoveSequenceKeyframe { .. } => Self::DISCRIMINATORS[16],
+            Self::SetSequenceMorphKeyframe { .. } => Self::DISCRIMINATORS[17],
+            Self::RemoveSequenceMorphKeyframe { .. } => Self::DISCRIMINATORS[18],
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -668,6 +717,35 @@ mod tests {
         Animation, FillOverride, INITIAL_STATE, NodeOverride, PathPoint, PathSegment, Prototype,
         PrototypeState, PrototypeStateId, PrototypeTransition, PrototypeTrigger,
     };
+
+    #[test]
+    fn all_discriminators_are_recognized_by_serde() {
+        for name in Operation::DISCRIMINATORS {
+            let error = serde_json::from_value::<Operation>(serde_json::json!({"op": name}))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("missing field"), "{name}: {error}");
+            assert!(!error.contains("unknown variant"));
+        }
+        let error = serde_json::from_value::<Operation>(serde_json::json!({"op":"unknown"}))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unknown variant"));
+    }
+    #[test]
+    fn capability_discriminators_are_unique_and_match_serialization() {
+        let names = super::Operation::DISCRIMINATORS;
+        let unique: std::collections::HashSet<_> = names.iter().collect();
+        assert_eq!(names.len(), unique.len());
+        let operation = super::Operation::SetDuration {
+            page: crate::PageId(1),
+            duration_ms: 1000,
+        };
+        assert_eq!(
+            serde_json::to_value(&operation).expect("JSON")["op"],
+            operation.discriminator()
+        );
+    }
 
     const PAGE: PageId = PageId(1);
 

@@ -143,6 +143,19 @@ fn request_pipe(path: &Path, request: SessionRequest) -> Result<Value, String> {
 
 #[tool_router]
 impl DesignerMcp {
+    #[tool(description = "Describe transport, schema, supported operations and known limitations.")]
+    fn describe_capabilities(&self) -> Result<Json<Value>, ErrorData> {
+        let Json(mut result) = self.request(SessionRequest::DescribeCapabilities)?;
+        result["transport"] = Value::String(
+            match &self.backend {
+                SessionBackend::Local(_) => "headless",
+                #[cfg(windows)]
+                SessionBackend::WindowsPipe(_) => "live",
+            }
+            .into(),
+        );
+        Ok(Json(result))
+    }
     #[tool(
         description = "Read the entire current document, revision, dirty state, and undo/redo availability."
     )]
@@ -264,10 +277,16 @@ fn load_session(path: Option<PathBuf>) -> Result<Session, String> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut open = None;
     let mut connect = false;
+    let mut pipe = None;
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--connect" => connect = true,
+            "--pipe" => {
+                pipe = Some(PathBuf::from(
+                    arguments.next().ok_or("--pipe requires a pipe name")?,
+                ))
+            }
             "--open" => {
                 open = Some(PathBuf::from(
                     arguments.next().ok_or("--open requires a .dsg path")?,
@@ -276,23 +295,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             other => return Err(format!("unknown argument {other}").into()),
         }
     }
+    if pipe.is_some() && !connect {
+        return Err("--pipe requires --connect".into());
+    }
     if connect && open.is_some() {
         return Err("--connect cannot be combined with --open".into());
     }
-    let server = if connect {
-        #[cfg(windows)]
-        {
-            DesignerMcp::connect_windows_pipe(PathBuf::from(
-                designer_engine::bridge::WINDOWS_SESSION_PIPE,
-            ))
-        }
-        #[cfg(not(windows))]
-        {
-            return Err("--connect is currently supported on Windows only".into());
-        }
-    } else {
-        DesignerMcp::new(load_session(open)?)
-    };
+    let server =
+        if connect {
+            #[cfg(windows)]
+            {
+                DesignerMcp::connect_windows_pipe(pipe.unwrap_or_else(|| {
+                    PathBuf::from(designer_engine::bridge::WINDOWS_SESSION_PIPE)
+                }))
+            }
+            #[cfg(not(windows))]
+            {
+                return Err("--connect is currently supported on Windows only".into());
+            }
+        } else {
+            DesignerMcp::new(load_session(open)?)
+        };
     let service = server.serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
     Ok(())
@@ -324,6 +347,46 @@ mod tests {
                 "tool {expected} is not registered"
             );
         }
+    }
+
+    #[test]
+    fn prototype_states_are_reachable_and_undoable() {
+        let server = DesignerMcp::new(Session::new(designer_core::sample_document()));
+        let Json(before) = server.read_document().expect("read");
+        let page = &before["document"]["pages"][0];
+        let node = page["nodes"][0]["id"].clone();
+        let prototype = serde_json::json!({
+            "initial": 0, "states": [
+                {"id":0,"name":"Initial","overrides":[]},
+                {"id":1,"name":"Hover","overrides":[{"node":node,"opacity":0.5}]},
+                {"id":2,"name":"Click","overrides":[{"node":node,"visible":false}]}
+            ],
+            "transitions":[
+                {"node":node,"from":0,"to":1,"trigger":"hover","duration_ms":200},
+                {"node":node,"from":1,"to":2,"trigger":"click","duration_ms":200}
+            ]
+        });
+        server.apply_transaction(Parameters(TransactionInput { expected_revision: 0, operations: vec![
+            serde_json::json!({"op":"set_prototype","page":page["id"],"prototype":prototype})
+        ]})).expect("prototype transaction");
+        let Json(after) = server.read_document().expect("read");
+        assert_eq!(
+            after["document"]["pages"][0]["prototype"]["states"][1]["overrides"][0]["opacity"],
+            0.5
+        );
+        server
+            .undo(Parameters(RevisionInput {
+                expected_revision: 1,
+            }))
+            .expect("undo");
+        assert_eq!(
+            server.read_document().expect("read").0["document"],
+            before["document"]
+        );
+        assert_eq!(
+            server.describe_capabilities().expect("capabilities").0["transport"],
+            "headless"
+        );
     }
 
     #[test]

@@ -379,3 +379,123 @@ async fn create_animate_save_and_reopen_round_trips_the_document() {
     std::fs::remove_file(path).expect("remove test document");
     std::fs::remove_dir(directory).expect("remove temporary directory");
 }
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread")]
+async fn live_pipe_binary_shares_revision_history_and_reports_missing_server() {
+    use designer_engine::{
+        Session,
+        bridge::{SessionReply, SessionRequest, execute_session_request},
+    };
+    use tokio::net::windows::named_pipe::ServerOptions;
+    let pipe_name = format!(r"\\.\pipe\designer-mcp-contract-{}", std::process::id());
+    let first = ServerOptions::new()
+        .first_pipe_instance(true)
+        .reject_remote_clients(true)
+        .create(&pipe_name)
+        .expect("create pipe");
+    let name = pipe_name.clone();
+    let server = tokio::spawn(async move {
+        let mut session = Session::new(designer_core::Document::empty("live"));
+        let mut pipe = first;
+        loop {
+            pipe.connect().await.expect("connect");
+            let next = ServerOptions::new()
+                .reject_remote_clients(true)
+                .create(&name)
+                .expect("next listener");
+            let mut reader = BufReader::new(pipe);
+            let mut line = String::new();
+            timeout(Duration::from_secs(10), reader.read_line(&mut line))
+                .await
+                .expect("timeout")
+                .expect("request");
+            let request: SessionRequest = serde_json::from_str(&line).expect("request JSON");
+            let reply = match execute_session_request(&mut session, request) {
+                Ok(result) => SessionReply::Ok { result },
+                Err(error) => SessionReply::Error { error },
+            };
+            let mut bytes = serde_json::to_vec(&reply).expect("reply");
+            bytes.push(b'\n');
+            reader
+                .get_mut()
+                .write_all(&bytes)
+                .await
+                .expect("send reply");
+            pipe = next;
+        }
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_designer-mcp"))
+        .args(["--connect", "--pipe", &pipe_name])
+        .kill_on_drop(true)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("binary");
+    let mut input = child.stdin.take().expect("stdin");
+    let mut output = BufReader::new(child.stdout.take().expect("stdout"));
+    initialize(&mut input, &mut output, 1).await;
+    let calls = [
+        ("read_document", json!({})),
+        (
+            "apply_transaction",
+            json!({"expected_revision":0,"operations":[{
+                "op":"add_node","page":1,"name":"live shape","kind":{"type":"ellipse"},
+                "bounds":{"x":0.0,"y":0.0,"width":10.0,"height":10.0}
+            }]}),
+        ),
+        ("read_document", json!({})),
+        ("undo", json!({"expected_revision":0})),
+        ("undo", json!({"expected_revision":1})),
+        ("read_document", json!({})),
+        ("describe_capabilities", json!({})),
+    ];
+    for (index, (name, mut arguments)) in calls.into_iter().enumerate() {
+        if name == "apply_transaction" {
+            arguments["operations"] = json!([Operation::AddNode {
+                page: PageId(1),
+                parent: None,
+                name: "live shape".into(),
+                kind: NodeKind::Ellipse,
+                bounds: Rect::new(0.0, 0.0, 10.0, 10.0),
+                fill: None
+            }]);
+        }
+        let id = index as u64 + 2;
+        send_json(&mut input, &json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":arguments}})).await;
+        let response = receive_response(&mut output, id).await;
+        let text = response.to_string();
+        match index {
+            0 => assert!(text.contains("live")),
+            1 => assert!(
+                !text.contains("isError\":true") && response.get("error").is_none(),
+                "{response}"
+            ),
+            2 => assert!(text.contains("live shape"), "{response}"),
+            3 => assert!(text.contains("revision conflict"), "{response}"),
+            4 => assert!(!text.contains("revision conflict"), "{response}"),
+            5 => assert!(!text.contains("live shape"), "{response}"),
+            6 => assert!(
+                text.contains("transport") && text.contains("live"),
+                "{response}"
+            ),
+            _ => unreachable!(),
+        }
+    }
+    server.abort();
+    let _ = server.await;
+    send_json(&mut input, &json!({"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"read_document","arguments":{}}})).await;
+    let response = receive_response(&mut output, 20).await;
+    assert!(
+        response
+            .to_string()
+            .contains("cannot connect to the running Designer session"),
+        "{response}"
+    );
+    drop(input);
+    timeout(Duration::from_secs(10), child.wait())
+        .await
+        .expect("exit timeout")
+        .expect("exit");
+}

@@ -1,6 +1,61 @@
 //! An open document with its history and file.
 
-use std::path::{Path, PathBuf};
+use std::{
+    fs::{File, OpenOptions},
+    io::Write,
+    path::{Path, PathBuf},
+};
+#[derive(Debug)]
+struct DocumentLock {
+    file: File,
+    path: PathBuf,
+}
+impl DocumentLock {
+    fn acquire(path: &Path, document_path: &Path) -> Result<Self, DsgError> {
+        let mut name = path.as_os_str().to_owned();
+        name.push(".lock");
+        let path = PathBuf::from(name);
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+        file.try_lock().map_err(|error| match error {
+            std::fs::TryLockError::WouldBlock => DsgError::Locked {
+                path: document_path.to_owned(),
+            },
+            std::fs::TryLockError::Error(error) => DsgError::Io(error),
+        })?;
+        file.set_len(0)?;
+        writeln!(file, "{}", std::process::id())?;
+        Ok(Self { file, path })
+    }
+}
+impl Drop for DocumentLock {
+    fn drop(&mut self) {
+        // Keep the OS lock held during best-effort removal.
+        #[cfg(windows)]
+        let _ = std::fs::remove_file(&self.path);
+        let _ = &self.path;
+        let _ = &self.file;
+    }
+}
+fn normalized_path(path: &Path) -> Result<PathBuf, DsgError> {
+    if path.exists() {
+        return Ok(path.canonicalize()?);
+    }
+    let absolute = std::path::absolute(path)?;
+    let parent = absolute
+        .parent()
+        .ok_or_else(|| std::io::Error::other("missing parent"))?
+        .canonicalize()?;
+    Ok(parent.join(
+        absolute
+            .file_name()
+            .ok_or_else(|| std::io::Error::other("missing file name"))?,
+    ))
+}
 
 use designer_core::{CommandError, Document, ModelError, NodeId, Operation};
 
@@ -30,6 +85,7 @@ pub struct Session {
     saved_state: Option<u64>,
     revision: u64,
     path: Option<PathBuf>,
+    file_lock: Option<DocumentLock>,
 }
 
 impl Session {
@@ -44,14 +100,53 @@ impl Session {
             saved_state: Some(0),
             revision: 0,
             path: None,
+            file_lock: None,
         }
     }
 
     /// Open a `.dsg` file.
     pub fn open(path: &Path) -> Result<Self, DsgError> {
+        let lock = DocumentLock::acquire(&normalized_path(path)?, path)?;
         let mut session = Self::new(dsg::open(path)?);
+        session.file_lock = Some(lock);
         session.path = Some(path.to_owned());
         Ok(session)
+    }
+
+    /// Reload a path, retaining ownership when reopening the current file.
+    pub fn reopen(&mut self, path: &Path) -> Result<Self, DsgError> {
+        if self
+            .path
+            .as_deref()
+            .map(normalized_path)
+            .transpose()?
+            .as_ref()
+            == Some(&normalized_path(path)?)
+        {
+            let mut session = Self::new(dsg::open(path)?);
+            session.path = Some(path.to_owned());
+            session.file_lock = self.file_lock.take();
+            Ok(session.succeeding(self))
+        } else {
+            Self::open(path).map(|session| session.succeeding(self))
+        }
+    }
+
+    /// Prepare this session to replace `previous` without changing its document,
+    /// saved state, file ownership or undo/redo history.
+    /// Its revision is strictly greater than the replaced session's revision,
+    /// so requests read from the previous document cannot pass revision checks.
+    ///
+    /// # Panics
+    /// Panics if `previous` has exhausted the revision counter.
+    pub fn succeeding(mut self, previous: &Session) -> Self {
+        self.revision = self.revision.max(
+            previous
+                .revision
+                .checked_add(1)
+                .expect("session revision exhausted"),
+        );
+        self
     }
 
     /// The current document.
@@ -59,8 +154,10 @@ impl Session {
         &self.current.document
     }
 
-    /// Number of changes since the session started, counting undo and redo.
+    /// Monotonic document revision, counting changes, undo and redo.
     /// It only grows, so an unchanged value means an unchanged document.
+    /// Replacements prepared with [`Self::succeeding`] have a strictly greater
+    /// revision than the session they replace.
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -159,7 +256,23 @@ impl Session {
     /// Save to a file and make it the file of this document. On error the
     /// session keeps its previous file and stays unsaved.
     pub fn save_as(&mut self, path: &Path) -> Result<(), DsgError> {
+        let normalized = normalized_path(path)?;
+        let lock = if self
+            .path
+            .as_deref()
+            .map(normalized_path)
+            .transpose()?
+            .as_ref()
+            == Some(&normalized)
+        {
+            None
+        } else {
+            Some(DocumentLock::acquire(&normalized, path)?)
+        };
         dsg::save(&self.current.document, path)?;
+        if let Some(lock) = lock {
+            self.file_lock = Some(lock);
+        }
         self.path = Some(path.to_owned());
         self.saved_state = Some(self.current.id);
         Ok(())
@@ -185,6 +298,37 @@ mod tests {
 
     fn count(session: &Session) -> usize {
         session.document().pages[0].nodes.len()
+    }
+
+    #[test]
+    fn replacement_revisions_reject_requests_from_previous_documents() {
+        use crate::bridge::{SessionRequest, execute_session_request};
+
+        for edits in [0, 3] {
+            let mut previous = Session::new(Document::empty("previous"));
+            for index in 0..edits {
+                previous.apply(&[add(f64::from(index))]).expect("edit");
+            }
+            let mut replacement =
+                Session::new(Document::empty("replacement")).succeeding(&previous);
+            let revision = replacement.revision();
+            assert!(revision > previous.revision());
+            assert!(!replacement.is_dirty());
+            assert!(!replacement.can_undo() && !replacement.can_redo());
+            let request = |expected_revision| SessionRequest::ApplyTransaction {
+                expected_revision,
+                operations: vec![add(0.0)],
+            };
+            let error = execute_session_request(&mut replacement, request(previous.revision()))
+                .expect_err("old document revision must conflict");
+            assert!(error.contains("revision conflict"));
+            assert_eq!(replacement.revision(), revision);
+            assert_eq!(count(&replacement), 0);
+            execute_session_request(&mut replacement, request(revision)).expect("current revision");
+            assert!(replacement.is_dirty() && replacement.can_undo());
+            assert!(replacement.undo());
+            assert!(!replacement.is_dirty());
+        }
     }
 
     #[test]
@@ -267,10 +411,42 @@ mod tests {
         session.redo();
         assert!(!session.is_dirty());
 
+        assert!(matches!(Session::open(&path), Err(DsgError::Locked { .. })));
+        let document = session.document().clone();
+        drop(session);
         let reopened = Session::open(&path).expect("opens");
-        assert_eq!(reopened.document(), session.document());
+        assert_eq!(reopened.document(), &document);
         assert!(!reopened.is_dirty() && !reopened.can_undo());
+        drop(reopened);
         std::fs::remove_dir_all(&directory).expect("cleanup");
+    }
+
+    #[test]
+    fn locks_preserve_sessions_and_repeated_saves_accept_stale_sidecars() {
+        let directory = std::env::temp_dir().join(format!("dsg-locks-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("directory");
+        let a = directory.join("a.dsg");
+        let b = directory.join("b.dsg");
+        std::fs::write(directory.join("a.dsg.lock"), "stale PID").expect("stale sidecar");
+        let mut first = Session::new(Document::empty("first"));
+        first.save_as(&a).expect("stale sidecar does not block");
+        first.save().expect("own save");
+        first.save_as(&a).expect("own save as");
+        let mut second = Session::new(Document::empty("second"));
+        second.save_as(&b).expect("second file");
+        let before = std::fs::read(&a).expect("bytes");
+        assert!(matches!(second.save_as(&a), Err(DsgError::Locked { .. })));
+        assert_eq!(std::fs::read(&a).expect("bytes"), before);
+        assert_eq!(second.path(), Some(b.as_path()));
+        assert_eq!(first.path(), Some(a.as_path()));
+        assert_eq!(second.document().name, "second");
+        assert_eq!(first.document().name, "first");
+        assert!(matches!(Session::open(&a), Err(DsgError::Locked { .. })));
+        drop(first);
+        let reopened = Session::open(&a).expect("released lock");
+        drop(reopened);
+        drop(second);
+        std::fs::remove_dir_all(directory).expect("cleanup");
     }
 
     #[test]
@@ -285,5 +461,23 @@ mod tests {
         }
         assert_eq!(undone, MAX_HISTORY);
         assert_eq!(count(&session), 5);
+    }
+
+    #[test]
+    fn reopening_own_path_reloads_and_retains_lock() {
+        let path = std::env::temp_dir().join(format!("reload-{}.dsg", std::process::id()));
+        let mut session = Session::new(Document::empty("saved"));
+        session.save_as(&path).expect("save");
+        session.apply(&[add(0.0)]).expect("edit");
+        let previous_revision = session.revision();
+        session = session.reopen(&path).expect("reload own file");
+        assert!(session.revision() > previous_revision);
+        assert_eq!(count(&session), 0);
+        assert!(!session.is_dirty());
+        let error = Session::open(&path).expect_err("still locked");
+        assert!(matches!(error, DsgError::Locked { path: ref p } if p == &path));
+        drop(session);
+        drop(Session::open(&path).expect("released"));
+        std::fs::remove_file(path).expect("cleanup");
     }
 }

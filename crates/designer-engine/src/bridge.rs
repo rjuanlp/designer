@@ -17,6 +17,8 @@ pub const WINDOWS_SESSION_PIPE: &str = r"\\.\pipe\designer-session-v1";
 pub enum SessionRequest {
     /// Read the document and its revision/history metadata.
     ReadDocument,
+    /// Describe the model operations and unsupported features.
+    DescribeCapabilities,
     /// Apply a single atomic transaction.
     ApplyTransaction {
         /// Revision returned by the latest read.
@@ -91,6 +93,15 @@ pub fn execute_session_request(
     request: SessionRequest,
 ) -> Result<Value, String> {
     match request {
+        SessionRequest::DescribeCapabilities => Ok(json!({
+            "schema_version": crate::dsg::SCHEMA_VERSION,
+            "operations": Operation::DISCRIMINATORS,
+            "prototype_triggers": ["hover", "hover_leave", "click"],
+            "unsupported": [
+                "components", "styles", "assets", "auto-layout",
+                "text editing", "GPU image rendering", "binary .fig"
+            ]
+        })),
         SessionRequest::ReadDocument => {
             let document = serde_json::to_value(session.document())
                 .map_err(|error| format!("serialize document: {error}"))?;
