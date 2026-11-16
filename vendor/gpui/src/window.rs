@@ -3210,7 +3210,19 @@ impl Window {
         self.invalidator.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
+        // Snap to whole device pixels so texels map one to one onto the
+        // window and the canvas is not resampled at fractional positions.
         let bounds = bounds.scale(scale_factor);
+        let bounds = Bounds {
+            origin: Point {
+                x: bounds.origin.x.round(),
+                y: bounds.origin.y.round(),
+            },
+            size: Size {
+                width: bounds.size.width.round(),
+                height: bounds.size.height.round(),
+            },
+        };
         let content_mask = self.content_mask().scale(scale_factor);
         self.next_frame.scene.insert_primitive(PaintSurface {
             order: 0,

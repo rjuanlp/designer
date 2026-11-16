@@ -1,8 +1,13 @@
 id,surface,feature,clone,note
 F001,S00,Rust workspace,partial,Locked build and verify script pass locally on Windows/MSVC; CI not yet run
 F002,S00,Vello probe scene,partial,Offscreen and in-GPUI rendering verified on one machine; scene is a two-shape probe only
-F003,S00,GPUI texture composition,partial,Works on one NVIDIA machine via shared textures and a GPUI patch; alpha/DPI/device loss/hybrid GPU unvalidated
-F004,S01,DSG persistence and recovery,no,Draft format only
+F003,S00,GPUI texture composition,partial,Works on one NVIDIA machine via shared textures and a GPUI patch incl. translucency; DPI/device loss/hybrid GPU unvalidated
+F004,S01,DSG persistence and recovery,no,Draft format only; the Documents screen only opens the built-in sample
+F016,S02,Application shell and navigation,partial,Six sections with Spanish labels; light/dark themes; wide and narrow (below 760 px) layouts; verified by screenshots at 1440 and 390 px on one machine; 100% scale only
+F017,S02,Layers canvas and properties (read-only),partial,Sample document only; selecting a layer outlines it and lists its values; no editing; text layers not drawn; frames do not clip; long layer names are cut without an ellipsis
+F018,S02,Keyboard navigation and focus ring,partial,Tab/Shift+Tab/Enter and two shortcuts checked by injected keys; no screen-reader support; no arrow-key navigation in lists
+F019,S04,Timeline panel,partial,Collapsible empty placeholder only; no keys or playback
+F020,S07,Preferences,partial,Theme switch and GPU adapter name; nothing is persisted; agents section is a placeholder
 F005,S02,Vector editing and history,no,Planned
 F006,S02,Typography and images,no,Planned
 F007,S02,Auto layout and constraints,no,Planned

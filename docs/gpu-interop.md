@@ -33,6 +33,7 @@ Vello (wgpu, Direct3D 12)                 GPUI (Direct3D 11)
   `Window::paint_external_texture`. The Windows renderer opens the handle with
   `ID3D11Device1::OpenSharedResource1` and draws it with the existing
   polychrome sprite pipeline, so it obeys paint order and the content mask.
+  Bounds are snapped to whole device pixels so texels map one to one.
 - **No CPU readback and no second swap chain.** Pixel data never leaves the GPU.
 
 ### Why shared handles instead of D3D11On12
@@ -48,6 +49,13 @@ The shared texture is `R8G8B8A8_UNORM` with unordered access (Vello writes it
 from a compute shader), **render target** and simultaneous access. On the
 tested driver, Direct3D 11 rejects the handle with `E_INVALIDARG` when the
 render-target flag is missing, even though nothing renders to it as a target.
+
+### Alpha
+
+Vello writes straight (non-premultiplied) alpha into the target, which is what
+GPUI's sprite blend (`SRC_ALPHA` / `INV_SRC_ALPHA`) expects. This was measured,
+not assumed: with a premultiplied blend a 50% white band saturated to pure
+white; with the sprite blend it matches the expected value (see Evidence).
 
 ### Synchronization
 
@@ -76,7 +84,8 @@ already handed over can still be opened.
 ## Evidence
 
 Machine: NVIDIA GeForce RTX 4050 Laptop GPU, driver 32.0.16.2124, the only
-display adapter enabled; Windows 11; Rust 1.100.0; debug build.
+display adapter enabled; Windows 11; Rust 1.100.0. Debug build unless a row
+says release.
 
 | Check | Result |
 | --- | --- |
@@ -86,25 +95,32 @@ display adapter enabled; Windows 11; Rust 1.100.0; debug build.
 | 600 frames, fixed size | 600 rendered, 0 skipped, no renderer errors |
 | 40 programmatic resizes, then 3 minimize/restore cycles | 970 rendered, 0 skipped, 42 canvases created, window responsive, no renderer errors while open |
 | Backpressure without a compositor (`gpu_contract` test) | Stops after the unused targets, no blocking |
+| Translucent canvas over a GPUI backdrop `(31,111,92)` | Transparent band `(31,111,92)`, 50% white band `(143,183,174)`, opaque band `(105,87,235)`: all equal the expected values, [`S00-translucent.png`](../replica/clone-screens/S00-translucent.png) |
+| GPUI `deferred` element (the pass used by menus and tooltips) above the canvas | Yes, same capture |
+| Release build, 3,000 frames | 0 skipped; frame interval mean 6.96 ms, p95 8.42 ms, p99 9.18 ms; UI-thread canvas work mean 1.36 ms, p95 2.23 ms |
+| Release build, 4 minute run, 28,025 frames | Private memory 636 MB at start, 649 to 651 MB from 30 s on; handles 641 to 667; always responsive. One 27.3 s gap in painting with 24 skipped frames, then normal pacing (see below) |
 
-Pacing of the probe scene in the fixed-size run: frame interval mean 9.44 ms,
-p95 12.65 ms, p99 13.73 ms; UI-thread canvas work p95 10.09 ms. These are
-debug-build figures for two shapes. They say nothing about the 10,000-node
-target, which remains unimplemented and unmeasured.
+Pacing of the probe scene in the debug fixed-size run: frame interval mean
+9.44 ms, p95 12.65 ms, p99 13.73 ms; UI-thread canvas work p95 10.09 ms. The
+release intervals follow the display refresh rate. All figures are for two
+shapes; they say nothing about the 10,000-node target, which remains
+unimplemented and unmeasured.
 
 Reproduce with:
 
 ```powershell
 cargo run --locked -p designer-gpu-bridge --example composited_probe -- --frames 600
+cargo run --locked -p designer-gpu-bridge --example composited_probe -- --translucent
+cargo run --release --locked -p designer-gpu-bridge --example composited_probe -- --frames 3000
 cargo test --locked -p designer-gpu-bridge -- --ignored
 ```
 
 ## What is not validated
 
-- **Translucent canvas content.** GPUI's sprite pipeline blends
-  non-premultiplied color while Vello writes premultiplied color. Only an
-  opaque canvas has been tested; a translucent one would need a dedicated
-  blend state.
+- **The 27.3 s painting gap in the 4 minute run.** The window was not in the
+  foreground and the machine was in use, so occlusion or display state is a
+  plausible cause, but it was not reproduced or diagnosed. The bridge skipped
+  24 frames instead of blocking and recovered on its own.
 - **Hybrid-GPU machines.** GPUI picks the first Direct3D 11 capable adapter and
   the probe requests the high-performance one. If they differ, opening the
   handle fails and the surface is skipped with a logged error.
@@ -112,11 +128,17 @@ cargo test --locked -p designer-gpu-bridge -- --ignored
 - **Device loss.** The patch clears its cache on GPUI device recreation, and
   the bridge ignores the removed-device fence value, but no loss was provoked.
 - **DPI changes** and moving between monitors.
-- **Popup menus and tooltips** over the canvas. Only an in-window element was
-  tested for occlusion.
-- **Long-running stability** and resource cleanup over hours.
-- **Release-build pacing** and the 60 FPS benchmark.
+- **Real popup menus and tooltips.** An in-window element and a `deferred`
+  element were tested, not GPUI's menu or tooltip components.
+- **Stability over hours.** The longest run is 4 minutes.
+- **The 60 FPS benchmark** on the 10,000-node scene.
 - **Other drivers and vendors** (AMD, Intel) and older Windows versions. Shared
   fences need Windows 10 1703 or later.
-- GPUI logs window-handle errors while the probe window closes. They appear
-  after the final report and were not investigated.
+## Known upstream noise
+
+When the window is closed by the system, GPUI 0.2.2 logs `window not found`
+and two invalid-window-handle errors (`0x80040102`, `0x80070578`). They come
+from unpatched upstream code: `src/platform/windows/window.rs` revokes drag and
+drop and destroys a window that is already destroyed, and a pending frame
+callback targets the closed window. They appear after the probe's final report
+and do not involve the bridge.

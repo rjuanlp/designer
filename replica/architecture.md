@@ -17,9 +17,10 @@ Before S01-S07, validate clipping, alpha, popup occlusion, resize, DPI changes,
 minimize/restore, device loss and no per-frame readback. Record an exact GPUI
 revision, every local patch, upstream license, and GPU evidence. The bridge
 (`designer-gpu-bridge` plus the patch in `vendor/gpui`) passes clipping,
-in-window occlusion, resize, minimize/restore and no-readback checks on one
-machine. Translucent content, popup occlusion, DPI changes, device loss and
-hybrid-GPU adapter matching are still unvalidated, so the gate stays open.
+in-window and deferred-element occlusion, translucent content, resize,
+minimize/restore and no-readback checks on one machine. DPI changes, device
+loss, hybrid-GPU adapter matching and the 60 FPS benchmark are still
+unvalidated, so the gate stays open.
 
 ## Target process model (ADR-002)
 
@@ -32,6 +33,21 @@ transaction before committing, publishes deltas, and returns a revision plus
 affected IDs. Conflicts never silently overwrite another client's work.
 GUI animation evaluates immutable snapshots using the shared pure animation
 library; playback does not create history entries. Queues are bounded.
+
+## Current crates
+
+- `designer-core`: typed document tree (pages, nodes, colors, validation) and
+  the built-in sample document. No GPUI or GPU dependency.
+- `designer-render`: turns a page into a display list and a Vello scene. The
+  display list is plain data and is tested without a GPU.
+- `designer-gpu-bridge`: shared-texture bridge, the only crate with `unsafe`.
+- `designer`: the GPUI shell. Interface tokens live in `theme.rs`, every
+  user-visible string in `strings.rs` (Spanish, one place to translate), the
+  on-demand canvas renderer in `canvas.rs` and the views in `shell.rs`.
+
+The shell renders the canvas only when the page, selection or size changes,
+not on every frame. `designer-engine`, `designer-mcp`, commands, history and
+persistence below are targets and do not exist yet.
 
 ## Target module boundaries
 

@@ -1,6 +1,6 @@
 diff -ruN -x examples -x Cargo.lock -x .cargo-ok -x Cargo.toml gpui-0.2.2/src/platform/windows/directx_renderer.rs gpui/src/platform/windows/directx_renderer.rs
 --- gpui-0.2.2/src/platform/windows/directx_renderer.rs	2006-07-23 22:21:28.000000000 -0300
-+++ gpui/src/platform/windows/directx_renderer.rs	2026-11-16 02:14:21.290144300 -0300
++++ gpui/src/platform/windows/directx_renderer.rs	2026-11-16 02:39:24.535765300 -0300
 @@ -45,6 +45,8 @@
      pipelines: DirectXRenderPipelines,
      direct_composition: Option<DirectComposition>,
@@ -46,14 +46,17 @@ diff -ruN -x examples -x Cargo.lock -x .cargo-ok -x Cargo.toml gpui-0.2.2/src/pl
          self.present()
      }
  
-@@ -570,12 +580,74 @@
+@@ -570,12 +580,77 @@
      }
  
      fn draw_surfaces(&mut self, surfaces: &[PaintSurface]) -> Result<()> {
 -        if surfaces.is_empty() {
 -            return Ok(());
 +        // DESIGNER PATCH (begin): composite shared textures with the polychrome
-+        // sprite pipeline, one draw call per surface, in scene order.
++        // sprite pipeline, one draw call per surface, in scene order. Its
++        // SRC_ALPHA blend matches the straight alpha that Vello writes.
++        // Measured: a 50% white band over a GPUI backdrop blends correctly
++        // with it and saturates to white with a premultiplied blend.
 +        for surface in surfaces {
 +            if let Err(error) = self.draw_external_texture(surface) {
 +                if self
@@ -320,7 +323,7 @@ diff -ruN -x examples -x Cargo.lock -x .cargo-ok -x Cargo.toml gpui-0.2.2/src/pl
  mod system_settings;
 diff -ruN -x examples -x Cargo.lock -x .cargo-ok -x Cargo.toml gpui-0.2.2/src/scene.rs gpui/src/scene.rs
 --- gpui-0.2.2/src/scene.rs	2006-07-23 22:21:28.000000000 -0300
-+++ gpui/src/scene.rs	2026-11-16 02:13:30.218340700 -0300
++++ gpui/src/scene.rs	2026-11-16 02:39:24.536789900 -0300
 @@ -660,8 +660,52 @@
      pub content_mask: ContentMask<ScaledPixels>,
      #[cfg(target_os = "macos")]
@@ -359,7 +362,7 @@ diff -ruN -x examples -x Cargo.lock -x .cargo-ok -x Cargo.toml gpui-0.2.2/src/sc
 +    /// if the operating system reuses the numeric handle value.
 +    pub id: u64,
 +    /// NT shared handle of a 2D texture that allows shader sampling. Color is
-+    /// sampled as sRGB-encoded, non-premultiplied RGBA.
++    /// sampled as sRGB-encoded RGBA with straight (non-premultiplied) alpha.
 +    pub shared_handle: isize,
 +    /// The producer signals this point when the texture content is complete;
 +    /// the renderer queues a GPU-side wait for it before sampling.
@@ -376,8 +379,8 @@ diff -ruN -x examples -x Cargo.lock -x .cargo-ok -x Cargo.toml gpui-0.2.2/src/sc
          Primitive::Surface(surface)
 diff -ruN -x examples -x Cargo.lock -x .cargo-ok -x Cargo.toml gpui-0.2.2/src/window.rs gpui/src/window.rs
 --- gpui-0.2.2/src/window.rs	2006-07-23 22:21:28.000000000 -0300
-+++ gpui/src/window.rs	2026-11-16 02:13:32.133814200 -0300
-@@ -3194,6 +3194,33 @@
++++ gpui/src/window.rs	2026-11-16 02:39:24.536789900 -0300
+@@ -3194,6 +3194,45 @@
          });
      }
  
@@ -397,7 +400,19 @@ diff -ruN -x examples -x Cargo.lock -x .cargo-ok -x Cargo.toml gpui-0.2.2/src/wi
 +        self.invalidator.debug_assert_paint();
 +
 +        let scale_factor = self.scale_factor();
++        // Snap to whole device pixels so texels map one to one onto the
++        // window and the canvas is not resampled at fractional positions.
 +        let bounds = bounds.scale(scale_factor);
++        let bounds = Bounds {
++            origin: Point {
++                x: bounds.origin.x.round(),
++                y: bounds.origin.y.round(),
++            },
++            size: Size {
++                width: bounds.size.width.round(),
++                height: bounds.size.height.round(),
++            },
++        };
 +        let content_mask = self.content_mask().scale(scale_factor);
 +        self.next_frame.scene.insert_primitive(PaintSurface {
 +            order: 0,

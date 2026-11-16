@@ -694,7 +694,7 @@ pub struct ExternalTexture {
     /// if the operating system reuses the numeric handle value.
     pub id: u64,
     /// NT shared handle of a 2D texture that allows shader sampling. Color is
-    /// sampled as sRGB-encoded, non-premultiplied RGBA.
+    /// sampled as sRGB-encoded RGBA with straight (non-premultiplied) alpha.
     pub shared_handle: isize,
     /// The producer signals this point when the texture content is complete;
     /// the renderer queues a GPU-side wait for it before sampling.

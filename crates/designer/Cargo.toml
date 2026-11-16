@@ -1,0 +1,22 @@
+[package]
+name = "designer"
+description = "Designer native application shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+designer-core = { path = "../designer-core" }
+
+[target.'cfg(windows)'.dependencies]
+designer-render = { path = "../designer-render" }
+designer-gpu-bridge = { path = "../designer-gpu-bridge" }
+gpui.workspace = true
+vello.workspace = true
+pollster.workspace = true
+anyhow.workspace = true
+log = "0.4"

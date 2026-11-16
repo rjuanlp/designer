@@ -581,7 +581,10 @@ impl DirectXRenderer {
 
     fn draw_surfaces(&mut self, surfaces: &[PaintSurface]) -> Result<()> {
         // DESIGNER PATCH (begin): composite shared textures with the polychrome
-        // sprite pipeline, one draw call per surface, in scene order.
+        // sprite pipeline, one draw call per surface, in scene order. Its
+        // SRC_ALPHA blend matches the straight alpha that Vello writes.
+        // Measured: a 50% white band over a GPUI backdrop blends correctly
+        // with it and saturates to white with a premultiplied blend.
         for surface in surfaces {
             if let Err(error) = self.draw_external_texture(surface) {
                 if self

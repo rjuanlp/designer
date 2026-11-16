@@ -1,5 +1,10 @@
 [workspace]
-members = ["crates/designer-render", "crates/designer-gpu-bridge"]
+members = [
+    "crates/designer-core",
+    "crates/designer-render",
+    "crates/designer-gpu-bridge",
+    "crates/designer",
+]
 # Patched third-party source; built as a dependency, never linted as our code.
 exclude = ["vendor/gpui"]
 resolver = "3"

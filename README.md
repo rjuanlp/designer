@@ -6,11 +6,16 @@ the vector canvas. Native documents will use **`.dsg`**.
 
 ## Project status
 
-**Pre-alpha: graphics feasibility work. There is no usable editor or release yet.**
-The repository currently contains renderer probes, a Windows bridge that
-composites Vello output inside a GPUI window on one tested machine, and project
-documentation. Document editing, `.dsg` persistence and MCP are planned, not
-implemented. No 60 FPS result has been established.
+**Pre-alpha: a read-only application shell. There is no usable editor or release yet.**
+The repository contains renderer probes, a Windows bridge that composites Vello
+output inside a GPUI window on one tested machine, and the `designer`
+application shell: navigation, layers, canvas, properties, a collapsible
+timeline placeholder and light/dark themes over a built-in sample document.
+Nothing can be created, edited, saved or opened yet; text layers are listed but
+not drawn. `.dsg` persistence, animation and MCP are planned, not implemented.
+No 60 FPS result has been established.
+
+![Application shell with the sample document](replica/clone-screens/S02-wide-dark.png)
 
 The project must finish validating Vello texture composition inside GPUI without
 a per-frame CPU readback before expanding the editor; the remaining checks are
@@ -41,5 +46,5 @@ or animation export in scope.
 
 Designer is independent of Figma and is not endorsed by it. Original project
 code and documentation are [MIT licensed](LICENSE). Dependencies retain their
-own licenses. Screenshots and sample documents will be added only when produced
-by the working application; no placeholder screenshots imply completed features.
+own licenses. Screenshots are captured from the running application and show
+only what it does today.

@@ -25,6 +25,32 @@ cargo doc --workspace --no-deps --locked
 `Cargo.lock` and `rust-toolchain.toml` are checked in and every command uses
 `--locked`. There is no installable application or file association yet.
 
+## Running the application shell
+
+```powershell
+cargo run --locked -p designer
+```
+
+The shell opens the built-in sample document. It is read-only: tools do not
+create layers, values cannot be edited and nothing is saved. A debug build
+takes several seconds to show its first frame while the GPU device and Vello
+shaders are prepared; the window is empty until then.
+
+Launch options set the initial state, mainly for screenshots:
+
+| Option | Meaning |
+| --- | --- |
+| `--size 1440x900` | Window size in logical pixels, at least 390x560. |
+| `--screen NAME` | `documents`, `design`, `components`, `preview`, `import` or `preferences`. |
+| `--page N` | Zero-based page index. |
+| `--select ID` | Node id to select on that page. |
+| `--panel NAME` | `layers`, `canvas` or `inspector`; used below 760 logical pixels of width. |
+| `--timeline` | Start with the timeline expanded. |
+| `--light` | Start with the light theme. |
+
+Keyboard: Tab and Shift+Tab move focus, Enter or Space activates the focused
+control, Ctrl+T toggles the timeline and Ctrl+Shift+L switches theme.
+
 ## Troubleshooting
 
 - `link.exe` missing: install the C++ workload, not only the Visual Studio installer.
@@ -47,7 +73,7 @@ The first probe submits 120 offscreen Vello frames on a hardware DX12 adapter.
 The second opens a plain GPUI window. The third composites animated Vello
 content inside a GPUI window through shared GPU textures; pass
 `-- --frames 600` to close automatically and print pacing figures for the probe
-scene. None of them is the project benchmark. See
+scene, or `-- --translucent` for the alpha-blending check. None of them is the project benchmark. See
 [GPU interop](gpu-interop.md) for what the integrated probe does and does not
 validate.
 

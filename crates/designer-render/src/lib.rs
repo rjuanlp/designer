@@ -1,7 +1,10 @@
-//! Deterministic Vello scene construction for the native compositor feasibility gate.
+//! Vello scene construction for Designer.
 //!
-//! This crate does not yet expose a GPUI texture compositor. A successful scene
-//! build is not evidence of GPU presentation or an editor implementation.
+//! [`document`] turns a document page into a scene. The items at the crate
+//! root are the deterministic probe scene used by the graphics gate. Nothing
+//! here touches a GPU; building a scene is not evidence of presentation.
+
+pub mod document;
 
 use vello::{
     Scene,

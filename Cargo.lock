@@ -1099,6 +1099,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "designer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "designer-core",
+ "designer-gpu-bridge",
+ "designer-render",
+ "gpui",
+ "log",
+ "pollster 0.4.0",
+ "vello",
+]
+
+[[package]]
+name = "designer-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "designer-gpu-bridge"
 version = "0.1.0"
 dependencies = [
@@ -1116,6 +1138,7 @@ name = "designer-render"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "designer-core",
  "gpui",
  "pollster 0.4.0",
  "vello",

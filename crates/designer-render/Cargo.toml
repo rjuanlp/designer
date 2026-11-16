@@ -1,6 +1,6 @@
 [package]
 name = "designer-render"
-description = "Designer Vello renderer feasibility tests"
+description = "Designer Vello scene construction"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 vello.workspace = true
+designer-core = { path = "../designer-core" }
 
 # Only the feasibility examples need these; the library stays GPUI-free.
 [dev-dependencies]

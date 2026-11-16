@@ -1,6 +1,9 @@
 //! Integrated graphics gate probe: Vello content composited inside a GPUI
 //! window through shared GPU textures, with no CPU readback.
 //!
+//! Run with `--translucent` to draw a transparent canvas with a half-alpha band
+//! over a colored GPUI backdrop, which checks premultiplied-alpha blending.
+//!
 //! Run with `--frames N` to close automatically after N canvas frames and
 //! print pacing figures. Those figures describe this small probe scene only;
 //! they are not the project benchmark.
@@ -18,10 +21,12 @@ mod windows_probe {
     use designer_render::{scene_at, tokens as scene_tokens};
     use gpui::{
         App, Application, Bounds, Context, ExternalFencePoint, ExternalTexture, Pixels, Window,
-        WindowBounds, WindowOptions, canvas, div, prelude::*, px, rgb, rgba, size,
+        WindowBounds, WindowOptions, canvas, deferred, div, prelude::*, px, rgb, rgba, size,
     };
     use vello::{
-        AaConfig, RenderParams, Renderer, RendererOptions, Scene, kurbo::Affine, peniko::Color,
+        AaConfig, RenderParams, Renderer, RendererOptions, Scene,
+        kurbo::{Affine, Rect},
+        peniko::{Color, Fill},
         wgpu,
     };
 
@@ -33,6 +38,10 @@ mod windows_probe {
         pub const MUTED: u32 = 0x9aa0ac;
         pub const OVERLAY: u32 = 0x18191dcc;
         pub const OVERLAY_BORDER: u32 = 0x6957eb;
+        /// GPUI color painted behind the canvas in the translucent check.
+        pub const BACKDROP: u32 = 0x1f6f5c;
+        /// Straight-alpha color of the middle band in the translucent check.
+        pub const HALF_WHITE: [u8; 4] = [255, 255, 255, 128];
         pub const GAP: f32 = 16.0;
         pub const OVERLAY_INSET: f32 = 24.0;
         /// The canvas is shifted this far outside its container so the
@@ -57,11 +66,12 @@ mod windows_probe {
         skipped: u32,
         recreated: u32,
         frame_limit: Option<u32>,
+        translucent: bool,
         reported: bool,
     }
 
     impl CanvasState {
-        fn new(frame_limit: Option<u32>) -> Result<Self> {
+        fn new(options: Options) -> Result<Self> {
             let (device, queue, adapter) = pollster::block_on(create_device())?;
             println!("Vello adapter: {adapter}");
             let renderer = Renderer::new(&device, RendererOptions::default())?;
@@ -78,7 +88,8 @@ mod windows_probe {
                 rendered: 0,
                 skipped: 0,
                 recreated: 0,
-                frame_limit,
+                frame_limit: options.frame_limit,
+                translucent: options.translucent,
                 reported: false,
             })
         }
@@ -106,19 +117,24 @@ mod windows_probe {
             }
             let canvas = self.canvas.as_mut().context("Shared canvas missing")?;
 
-            let seconds = self.started.elapsed().as_secs_f64();
-            let content = scene_at(seconds).context("Invalid probe time")?;
-            let mut scene = Scene::new();
-            scene.append(
-                &content,
-                Some(Affine::scale_non_uniform(
-                    f64::from(width) / f64::from(scene_tokens::WIDTH),
-                    f64::from(height) / f64::from(scene_tokens::HEIGHT),
-                )),
-            );
-            let [r, g, b] = scene_tokens::BACKGROUND;
+            let (scene, base_color) = if self.translucent {
+                (alpha_bands(width, height), Color::TRANSPARENT)
+            } else {
+                let seconds = self.started.elapsed().as_secs_f64();
+                let content = scene_at(seconds).context("Invalid probe time")?;
+                let mut scene = Scene::new();
+                scene.append(
+                    &content,
+                    Some(Affine::scale_non_uniform(
+                        f64::from(width) / f64::from(scene_tokens::WIDTH),
+                        f64::from(height) / f64::from(scene_tokens::HEIGHT),
+                    )),
+                );
+                let [r, g, b] = scene_tokens::BACKGROUND;
+                (scene, Color::from_rgb8(r, g, b))
+            };
             let params = RenderParams {
-                base_color: Color::from_rgb8(r, g, b),
+                base_color,
                 width,
                 height,
                 antialiasing_method: AaConfig::Area,
@@ -233,7 +249,32 @@ mod windows_probe {
         }
     }
 
+    /// Three vertical bands: fully transparent, half-alpha white, opaque accent.
+    fn alpha_bands(width: u32, height: u32) -> Scene {
+        let (width, height) = (f64::from(width), f64::from(height));
+        let third = width / 3.0;
+        let mut scene = Scene::new();
+        let [r, g, b, a] = tokens::HALF_WHITE;
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgba8(r, g, b, a),
+            None,
+            &Rect::new(third, 0.0, 2.0 * third, height),
+        );
+        let [r, g, b] = scene_tokens::ACCENT;
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(r, g, b),
+            None,
+            &Rect::new(2.0 * third, 0.0, width, height),
+        );
+        scene
+    }
+
     struct Probe {
+        translucent: bool,
         state: Rc<RefCell<CanvasState>>,
     }
 
@@ -241,6 +282,18 @@ mod windows_probe {
         fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             window.request_animation_frame();
             let state = self.state.clone();
+            let translucent = self.translucent;
+            // The alpha check samples known positions, so it does not shift.
+            let overhang = if translucent {
+                0.0
+            } else {
+                tokens::CLIP_OVERHANG
+            };
+            let hint = if translucent {
+                "Bandas: transparente, blanco al 50 % y color opaco sobre un fondo de la interfaz."
+            } else {
+                "El lienzo está desplazado: la hoja debe verse recortada arriba y a la izquierda."
+            };
             let vello_canvas = canvas(
                 |_, _, _| (),
                 move |bounds: Bounds<Pixels>, (), window: &mut Window, cx: &mut App| {
@@ -266,8 +319,8 @@ mod windows_probe {
                 },
             )
             .absolute()
-            .top(px(-tokens::CLIP_OVERHANG))
-            .left(px(-tokens::CLIP_OVERHANG))
+            .top(px(-overhang))
+            .left(px(-overhang))
             .size_full();
 
             div()
@@ -284,6 +337,7 @@ mod windows_probe {
                         .flex_1()
                         .relative()
                         .overflow_hidden()
+                        .when(translucent, |backdrop| backdrop.bg(rgb(tokens::BACKDROP)))
                         .child(vello_canvas)
                         .child(
                             div()
@@ -295,11 +349,25 @@ mod windows_probe {
                                 .border_1()
                                 .border_color(rgb(tokens::OVERLAY_BORDER))
                                 .child("Panel de la interfaz sobre el lienzo"),
+                        )
+                        // Deferred elements (menus, tooltips) paint in a later
+                        // pass; this one must still land above the canvas.
+                        .child(
+                            deferred(
+                                div()
+                                    .absolute()
+                                    .bottom(px(tokens::OVERLAY_INSET))
+                                    .right(px(tokens::OVERLAY_INSET))
+                                    .p(px(tokens::GAP))
+                                    .bg(rgba(tokens::OVERLAY))
+                                    .border_1()
+                                    .border_color(rgb(tokens::OVERLAY_BORDER))
+                                    .child("Elemento diferido sobre el lienzo"),
+                            )
+                            .with_priority(1),
                         ),
                 )
-                .child(div().text_color(rgb(tokens::MUTED)).child(
-                    "El lienzo está desplazado: la hoja debe verse recortada arriba y a la izquierda.",
-                ))
+                .child(div().text_color(rgb(tokens::MUTED)).child(hint))
         }
     }
 
@@ -325,8 +393,9 @@ mod windows_probe {
         if log::set_logger(&StderrLogger).is_ok() {
             log::set_max_level(log::LevelFilter::Warn);
         }
-        let frame_limit = parse_frame_limit()?;
-        let state = Rc::new(RefCell::new(CanvasState::new(frame_limit)?));
+        let options = parse_options()?;
+        let translucent = options.translucent;
+        let state = Rc::new(RefCell::new(CanvasState::new(options)?));
         Application::new().run(move |cx: &mut App| {
             let bounds = Bounds::centered(None, size(px(tokens::WIDTH), px(tokens::HEIGHT)), cx);
             let report_state = state.clone();
@@ -339,7 +408,7 @@ mod windows_probe {
                     }),
                     ..Default::default()
                 },
-                |_, cx| cx.new(|_| Probe { state }),
+                |_, cx| cx.new(|_| Probe { translucent, state }),
             ) {
                 eprintln!("Window creation failed: {error}");
                 cx.quit();
@@ -357,18 +426,30 @@ mod windows_probe {
         Ok(())
     }
 
-    fn parse_frame_limit() -> Result<Option<u32>> {
+    struct Options {
+        frame_limit: Option<u32>,
+        translucent: bool,
+    }
+
+    fn parse_options() -> Result<Options> {
+        let mut options = Options {
+            frame_limit: None,
+            translucent: false,
+        };
         let mut arguments = std::env::args().skip(1);
-        match arguments.next().as_deref() {
-            None => Ok(None),
-            Some("--frames") => {
-                let value = arguments.next().context("--frames needs a number")?;
-                let frames: u32 = value.parse().context("--frames needs a positive integer")?;
-                ensure!(frames > 0, "--frames needs a positive integer");
-                Ok(Some(frames))
+        while let Some(argument) = arguments.next() {
+            match argument.as_str() {
+                "--translucent" => options.translucent = true,
+                "--frames" => {
+                    let value = arguments.next().context("--frames needs a number")?;
+                    let frames: u32 = value.parse().context("--frames needs a positive integer")?;
+                    ensure!(frames > 0, "--frames needs a positive integer");
+                    options.frame_limit = Some(frames);
+                }
+                other => anyhow::bail!("Unknown argument: {other}"),
             }
-            Some(other) => anyhow::bail!("Unknown argument: {other}"),
         }
+        Ok(options)
     }
 }
 

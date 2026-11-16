@@ -1,7 +1,9 @@
 # Roadmap
 
-1. **Active:** reproducible Rust/MSVC build and GPUI–Vello graphics feasibility.
-2. Native shell and create/draw/animate/save/reopen/MCP/undo vertical slice.
+1. Reproducible Rust/MSVC build and GPUI–Vello graphics feasibility. Works on
+   one machine; DPI change, device loss and hybrid-GPU checks remain open.
+2. **Active:** native shell (read-only structure done) and the
+   create/draw/animate/save/reopen/MCP/undo vertical slice.
 3. Vector tools, typography, layout, components and local styles.
 4. Advanced animation, nested sequences, morphing and interactive states.
 5. Structured Figma migration, accessibility and complete MCP capability coverage.
