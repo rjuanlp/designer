@@ -6,13 +6,12 @@ the vector canvas. Native documents will use **`.dsg`**.
 
 ## Project status
 
-**Pre-alpha: a read-only application shell. There is no usable editor or release yet.**
-The repository contains renderer probes, a Windows bridge that composites Vello
-output inside a GPUI window on one tested machine, and the `designer`
-application shell: navigation, layers, canvas, properties, a collapsible
-timeline placeholder and light/dark themes over a built-in sample document.
-Nothing can be created, edited, saved or opened yet; text layers are listed but
-not drawn. `.dsg` persistence, animation and MCP are planned, not implemented.
+**Pre-alpha: basic shape editing and local document files. No release yet.**
+The Windows GPUI application composites a Vello canvas through shared GPU
+textures. Create documents, draw frames/rectangles/ellipses, select and move
+layers, delete, undo/redo, and save/open `.dsg` files. The inspector remains
+read-only. Text rendering, pen editing, recovery, animation UI and MCP remain
+unimplemented. The timeline is a placeholder.
 No 60 FPS result has been established.
 
 ![Application shell with the sample document](replica/clone-screens/S02-wide-dark.png)

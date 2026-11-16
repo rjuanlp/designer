@@ -13,6 +13,11 @@
 - Add page display lists and Vello scenes to `designer-render`.
 - Add the `designer` application shell: navigation, read-only layers, canvas
   and properties, timeline placeholder, light/dark themes, narrow layout and
-  keyboard focus. It cannot create, edit, save or open documents.
+  keyboard focus.
+
+- Add in-process sessions with atomic commands and bounded undo/redo history.
+- Add validated `.dsg` save/open and native file dialogs with unsaved-change prompts.
+- Add frame/rectangle/ellipse drawing, hit testing, moving and deleting layers.
+- Keep the status row fixed so command messages do not shift the canvas during drags.
 
 There is no released editor binary.

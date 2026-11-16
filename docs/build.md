@@ -31,8 +31,9 @@ cargo doc --workspace --no-deps --locked
 cargo run --locked -p designer
 ```
 
-The shell opens the built-in sample document. It is read-only: tools do not
-create layers, values cannot be edited and nothing is saved. A debug build
+The application opens the sample document. Ctrl+N creates an empty document;
+Frame, Rectangle and Ellipse draw shapes by clicking or dragging. Move selects
+and drags layers. Delete removes the selection. Inspector values remain read-only. A debug build
 takes several seconds to show its first frame while the GPU device and Vello
 shaders are prepared; the window is empty until then.
 
@@ -47,9 +48,11 @@ Launch options set the initial state, mainly for screenshots:
 | `--panel NAME` | `layers`, `canvas` or `inspector`; used below 760 logical pixels of width. |
 | `--timeline` | Start with the timeline expanded. |
 | `--light` | Start with the light theme. |
+| `--open FILE.dsg` | Open a local document instead of the sample. |
 
 Keyboard: Tab and Shift+Tab move focus, Enter or Space activates the focused
-control, Ctrl+T toggles the timeline and Ctrl+Shift+L switches theme.
+control. Ctrl+S saves, Ctrl+Shift+S saves as, Ctrl+O opens, Ctrl+Z undoes,
+Ctrl+Y or Ctrl+Shift+Z redoes, Escape cancels a drag. Ctrl+T toggles the timeline and Ctrl+Shift+L switches theme.
 
 ## Troubleshooting
 

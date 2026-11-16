@@ -148,3 +148,57 @@ fn sample_document_builds_a_scene_on_every_page() {
         let _ = page_scene(page, view, items.first().map(|item| item.node));
     }
 }
+
+#[test]
+fn hit_testing_returns_the_topmost_painted_unlocked_node() {
+    use designer_render::document::hit_test;
+
+    let child = node(
+        2,
+        NodeKind::Ellipse,
+        Rect::new(10.0, 10.0, 20.0, 20.0),
+        vec![],
+    );
+    let frame = node(
+        1,
+        NodeKind::Frame,
+        Rect::new(100.0, 100.0, 100.0, 100.0),
+        vec![child],
+    );
+    let over = node(
+        3,
+        NodeKind::Rectangle { corner_radius: 0.0 },
+        Rect::new(150.0, 150.0, 100.0, 100.0),
+        vec![],
+    );
+    let mut page = page(vec![frame, over]);
+
+    assert_eq!(hit_test(&page, 5.0, 5.0), None);
+    assert_eq!(hit_test(&page, 105.0, 105.0), Some(NodeId(1)));
+    // The child is offset by its parent and hit before it.
+    assert_eq!(hit_test(&page, 120.0, 120.0), Some(NodeId(2)));
+    // The corner of the child's bounds is outside the ellipse.
+    assert_eq!(hit_test(&page, 111.0, 111.0), Some(NodeId(1)));
+    // Later siblings are on top.
+    assert_eq!(hit_test(&page, 160.0, 160.0), Some(NodeId(3)));
+
+    page.nodes[1].locked = true;
+    assert_eq!(hit_test(&page, 160.0, 160.0), Some(NodeId(1)));
+    page.nodes[0].visible = false;
+    assert_eq!(hit_test(&page, 120.0, 120.0), None);
+    page.nodes[0].visible = true;
+    page.nodes[0].fill = None;
+    assert_eq!(hit_test(&page, 105.0, 105.0), None);
+    assert_eq!(hit_test(&page, 120.0, 120.0), Some(NodeId(2)));
+}
+
+#[test]
+fn a_view_maps_pixels_back_to_page_points() {
+    let view = ViewTransform {
+        scale: 0.5,
+        offset_x: 20.0,
+        offset_y: -10.0,
+    };
+    assert_eq!(view.to_page(20.0, -10.0), (0.0, 0.0));
+    assert_eq!(view.to_page(70.0, 40.0), (100.0, 100.0));
+}

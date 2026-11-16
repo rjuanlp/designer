@@ -373,8 +373,10 @@ mod tests {
         twice.tracks.push(twice.tracks[0].clone());
         assert!(valid(&twice).is_err());
 
-        let mut endless = Animation::default();
-        endless.duration_ms = 0;
+        let endless = Animation {
+            duration_ms: 0,
+            ..Animation::default()
+        };
         assert!(valid(&endless).is_err());
     }
 }

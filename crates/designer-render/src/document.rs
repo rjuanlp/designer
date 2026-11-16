@@ -62,6 +62,14 @@ impl ViewTransform {
         offset_y: 0.0,
     };
 
+    /// The page point shown at a target pixel.
+    pub fn to_page(&self, pixel_x: f64, pixel_y: f64) -> (f64, f64) {
+        (
+            (pixel_x - self.offset_x) / self.scale,
+            (pixel_y - self.offset_y) / self.scale,
+        )
+    }
+
     fn affine(&self) -> Affine {
         Affine::translate((self.offset_x, self.offset_y)) * Affine::scale(self.scale)
     }
@@ -122,6 +130,53 @@ pub fn absolute_bounds(page: &Page, id: NodeId) -> Option<Rect> {
     page.nodes
         .iter()
         .find_map(|node| locate(node, (0.0, 0.0), id))
+}
+
+fn contains(shape: Shape, bounds: Rect, x: f64, y: f64) -> bool {
+    let inside = x >= bounds.x
+        && y >= bounds.y
+        && x <= bounds.x + bounds.width
+        && y <= bounds.y + bounds.height;
+    match shape {
+        // Rounded corners are ignored: the miss area is a few units at most.
+        Shape::Rectangle { .. } => inside,
+        Shape::Ellipse => {
+            let (radius_x, radius_y) = (bounds.width / 2.0, bounds.height / 2.0);
+            if !inside || radius_x <= 0.0 || radius_y <= 0.0 {
+                return false;
+            }
+            let dx = (x - bounds.x - radius_x) / radius_x;
+            let dy = (y - bounds.y - radius_y) / radius_y;
+            dx * dx + dy * dy <= 1.0
+        }
+    }
+}
+
+fn hit(node: &Node, origin: (f64, f64), x: f64, y: f64) -> Option<NodeId> {
+    if !node.visible || node.locked {
+        return None;
+    }
+    let bounds = node.bounds.translated(origin.0, origin.1);
+    // Children are painted over their parent, and later children on top.
+    node.children
+        .iter()
+        .rev()
+        .find_map(|child| hit(child, (bounds.x, bounds.y), x, y))
+        .or_else(|| {
+            let shape = shape_of(node)?;
+            (node.fill.is_some() && contains(shape, bounds, x, y)).then_some(node.id)
+        })
+}
+
+/// The topmost painted node under a page point.
+///
+/// Only what is drawn can be hit: hidden nodes, nodes without a fill, groups
+/// and text are skipped. A locked node protects its whole subtree.
+pub fn hit_test(page: &Page, x: f64, y: f64) -> Option<NodeId> {
+    page.nodes
+        .iter()
+        .rev()
+        .find_map(|node| hit(node, (0.0, 0.0), x, y))
 }
 
 /// Smallest rectangle containing every top-level node, if the page has any.

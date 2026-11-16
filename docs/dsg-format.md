@@ -1,27 +1,20 @@
-# DSG format — draft v1
+# DSG format — current v1 subset
 
-**Specification draft, not implemented.** Native extension: .dsg.
+The engine reads and writes ZIP archives containing UTF-8 `manifest.json`
+and `document.json`. The manifest has `format: "designer-dsg"`,
+`schema_version: 1` and a generator string. Document IDs survive save/open.
+Documents are validated before writing and before becoming active state.
 
-The planned container is ZIP with UTF-8 manifest.json and document.json plus
-assets addressed by SHA-256. The manifest identifies the format as Designer DSG
-and contains an integer schema version. The document holds pages, typed nodes,
-styles, components, animation tracks, sequences and interactive states. IDs remain
-stable across save/reopen. Source IDs from migrations are metadata.
+The reader rejects malformed ZIP/JSON, missing entries, unsafe archive paths,
+invalid model values and future schema versions. Limits: 256 MiB for an on-disk
+archive, 64 MiB uncompressed document, 64 KiB manifest, 4096 entries.
+Save writes a sibling temporary file, flushes it and renames it over the
+previous destination. Failed saves leave the session dirty and preserve the
+previous destination. Contract tests cover replacement and failed writes.
 
-A reader must validate format identity, schema version, reference integrity,
-finite numbers, hierarchy/sequence acyclicity, asset hashes, archive paths and
-bounded uncompressed size before publishing a document. Unknown future major
-versions are rejected without overwriting the source. Do not deserialize invalid
-values directly into active state.
+This is a partial implementation: assets, write locks, recovery snapshots,
+migration, published JSON schemas and interrupted-save recovery are not
+implemented. Do not treat the format as frozen or use simultaneous writers.
 
-Save writes a sibling temporary file, flushes it, then atomically replaces the
-destination. The engine owns a write lock. Recovery snapshots are separate from
-the last successful user save. Failed writes preserve the previous file.
-
-Before claiming v1 support, publish machine-readable schemas and fixtures for
-round-trip, corrupt archives, future versions, missing resources and interrupted
-save recovery. No sample .dsg is shipped until the writer and reader are tested.
-
-Forks must namespace additional metadata and document version changes. Do not
-reuse a version number for incompatible semantics. This specification will be
-frozen only after the persistence milestone passes.
+See `crates/designer-engine/tests/dsg_contract.rs` for generated fixtures and
+round-trip, corrupt, future-version, invalid-model and unsafe-path tests.

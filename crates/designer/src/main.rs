@@ -1,13 +1,13 @@
 //! Designer application shell.
 //!
-//! This is the interface structure only: navigation, panels, themes and the
-//! built-in sample document rendered by Vello. Editing, `.dsg` files,
-//! animation and MCP are not implemented yet.
+//! Navigation, panels, themes and a Vello canvas on which frames, rectangles
+//! and ellipses can be drawn, moved and deleted, with undo/redo and `.dsg`
+//! files. Property editing, text, animation and MCP are not implemented yet.
 //!
 //! Launch options, mainly for capturing interface states:
 //! `--size 1440x900`, `--screen documents|design|components|preview|import|preferences`,
 //! `--page N` (zero-based), `--select NODE_ID`, `--panel layers|canvas|inspector`,
-//! `--timeline`, `--light`.
+//! `--timeline`, `--light`, `--open FILE.dsg`.
 
 mod strings;
 mod theme;
@@ -37,6 +37,8 @@ pub struct LaunchOptions {
     pub timeline: bool,
     /// Start with the light theme.
     pub light: bool,
+    /// Document file opened at start instead of the sample document.
+    pub open: Option<std::path::PathBuf>,
 }
 
 impl Default for LaunchOptions {
@@ -49,6 +51,7 @@ impl Default for LaunchOptions {
             panel: NarrowPanel::Canvas,
             timeline: false,
             light: false,
+            open: None,
         }
     }
 }
@@ -66,6 +69,7 @@ pub fn parse_options(arguments: impl IntoIterator<Item = String>) -> Result<Laun
         match argument.as_str() {
             "--timeline" => options.timeline = true,
             "--light" => options.light = true,
+            "--open" => options.open = Some(value("--open")?.into()),
             "--size" => {
                 let text = value("--size")?;
                 let parsed = text.split_once('x').and_then(|(width, height)| {
@@ -138,7 +142,10 @@ mod app {
 
     use crate::{
         LaunchOptions,
-        shell::{self, FocusNext, FocusPrevious, Shell, ToggleTheme, ToggleTimeline},
+        shell::{
+            self, Cancel, DeleteSelection, FocusNext, FocusPrevious, NewDocument, Open, Redo, Save,
+            SaveAs, Shell, ToggleTheme, ToggleTimeline, Undo,
+        },
         strings,
         theme::metrics,
     };
@@ -172,6 +179,16 @@ mod app {
                 KeyBinding::new("ctrl-shift-l", ToggleTheme, context),
                 KeyBinding::new("tab", FocusNext, context),
                 KeyBinding::new("shift-tab", FocusPrevious, context),
+                KeyBinding::new("ctrl-z", Undo, context),
+                KeyBinding::new("ctrl-shift-z", Redo, context),
+                KeyBinding::new("ctrl-y", Redo, context),
+                KeyBinding::new("ctrl-s", Save, context),
+                KeyBinding::new("ctrl-shift-s", SaveAs, context),
+                KeyBinding::new("ctrl-o", Open, context),
+                KeyBinding::new("ctrl-n", NewDocument, context),
+                KeyBinding::new("delete", DeleteSelection, context),
+                KeyBinding::new("backspace", DeleteSelection, context),
+                KeyBinding::new("escape", Cancel, context),
             ]);
             let (width, height) = options.size;
             let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
@@ -191,6 +208,10 @@ mod app {
                 |window, cx| {
                     let shell = cx.new(|cx| Shell::new(&options, cx));
                     window.focus(&shell.read(cx).focus_handle());
+                    let closing = shell.clone();
+                    window.on_window_should_close(cx, move |window, cx| {
+                        closing.update(cx, |shell, cx| shell.should_close(window, cx))
+                    });
                     shell
                 },
             );
@@ -256,6 +277,8 @@ mod tests {
             "inspector",
             "--timeline",
             "--light",
+            "--open",
+            "a b.dsg",
         ])
         .expect("valid options");
         assert_eq!(options.size, (390.0, 844.0));
@@ -264,6 +287,7 @@ mod tests {
         assert_eq!(options.select, Some(7));
         assert_eq!(options.panel, NarrowPanel::Inspector);
         assert!(options.timeline && options.light);
+        assert_eq!(options.open, Some("a b.dsg".into()));
     }
 
     #[test]
@@ -277,6 +301,7 @@ mod tests {
             &["--panel", "left"],
             &["--page", "-1"],
             &["--select", "abc"],
+            &["--open"],
             &["--fast"],
         ] {
             assert!(parse(arguments).is_err(), "{arguments:?} was accepted");

@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/designer-core",
+    "crates/designer-engine",
     "crates/designer-render",
     "crates/designer-gpu-bridge",
     "crates/designer",

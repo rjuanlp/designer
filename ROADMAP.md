@@ -12,3 +12,7 @@
 These are milestones, not completed capabilities or promised dates. See
 [features](replica/features.csv) for current status. No cloud, developer mode,
 code generation, animation export or binary .fig compatibility is planned.
+
+Implementation checkpoint **hito 3** (separate from roadmap item 3): basic
+create/draw/save/reopen/undo is implemented. Text, animation UI and MCP in the
+full vertical slice remain pending. See the build log for validation.

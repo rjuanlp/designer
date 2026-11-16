@@ -38,6 +38,8 @@ library; playback does not create history entries. Queues are bounded.
 
 - `designer-core`: typed document tree (pages, nodes, colors, validation) and
   the built-in sample document. No GPUI or GPU dependency.
+- `designer-engine`: in-process document sessions, bounded transaction history and
+  validated ZIP/JSON `.dsg` persistence. No UI or GPU dependency.
 - `designer-render`: turns a page into a display list and a Vello scene. The
   display list is plain data and is tested without a GPU.
 - `designer-gpu-bridge`: shared-texture bridge, the only crate with `unsafe`.
@@ -46,8 +48,8 @@ library; playback does not create history entries. Queues are bounded.
   on-demand canvas renderer in `canvas.rs` and the views in `shell.rs`.
 
 The shell renders the canvas only when the page, selection or size changes,
-not on every frame. `designer-engine`, `designer-mcp`, commands, history and
-persistence below are targets and do not exist yet.
+not on every frame. The GUI uses the in-process engine. Multi-client revision
+checks, IPC, recovery and `designer-mcp` remain targets.
 
 ## Target module boundaries
 

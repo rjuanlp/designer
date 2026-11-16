@@ -94,6 +94,8 @@ pub mod metrics {
 
     /// Type scale.
     pub const TEXT_S: f32 = 12.0;
+    /// Fixed command status row, independent of message length.
+    pub const STATUS_HEIGHT: f32 = 28.0;
     /// Type scale.
     pub const TEXT_M: f32 = 13.0;
     /// Type scale.

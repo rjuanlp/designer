@@ -1,8 +1,11 @@
 //! Renders a document page with Vello into shared textures for GPUI.
 //!
-//! Rendering is on demand: a frame is produced only when the page, the
-//! selection or the target size changes. Otherwise the latest frame is
-//! painted again.
+//! Rendering is on demand: a frame is produced only when the content
+//! generation, the view or the target size changes. Otherwise the latest
+//! frame is painted again.
+//!
+//! The view is fitted to the page content once and then kept, so the content
+//! does not jump while it is being edited.
 
 use anyhow::{Context as _, Result, ensure};
 use designer_core::{NodeId, Page, PageId};
@@ -27,7 +30,8 @@ struct Gpu {
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct FrameKey {
     page: PageId,
-    selection: Option<NodeId>,
+    generation: u64,
+    view_epoch: u64,
     width: u32,
     height: u32,
 }
@@ -47,6 +51,19 @@ pub struct CanvasHost {
     canvas: Option<SharedCanvas>,
     retired: Vec<(SharedCanvas, u32)>,
     rendered: Option<FrameKey>,
+    view: Option<(u64, PageId, ViewTransform)>,
+    placement: Option<Placement>,
+}
+
+/// Where the canvas element is in the window.
+#[derive(Clone, Copy)]
+struct Placement {
+    /// Left edge in logical window pixels.
+    x: f32,
+    /// Top edge in logical window pixels.
+    y: f32,
+    /// Physical pixels per logical pixel.
+    scale: f32,
 }
 
 impl CanvasHost {
@@ -58,7 +75,24 @@ impl CanvasHost {
             canvas: None,
             retired: Vec::new(),
             rendered: None,
+            view: None,
+            placement: None,
         }
+    }
+
+    /// Record where the canvas element was painted, for [`Self::page_point`].
+    pub fn set_placement(&mut self, x: f32, y: f32, scale: f32) {
+        self.placement = Some(Placement { x, y, scale });
+    }
+
+    /// The page point under a position in logical window pixels, once the
+    /// canvas has been painted.
+    pub fn page_point(&self, window_x: f32, window_y: f32) -> Option<(f64, f64)> {
+        let (placement, (_, _, view)) = (self.placement?, self.view?);
+        Some(view.to_page(
+            f64::from((window_x - placement.x) * placement.scale),
+            f64::from((window_y - placement.y) * placement.scale),
+        ))
     }
 
     /// Name of the adapter used for rendering.
@@ -73,15 +107,21 @@ impl CanvasHost {
 
     /// Get the frame for a page at a physical size, rendering it if needed.
     ///
+    /// `generation` must change whenever the page content or the selection
+    /// changes. `view_epoch` must change when the view should be fitted to
+    /// the content again, as after opening a document.
+    ///
     /// An error disables the canvas; it is then reported by [`Self::error`].
     pub fn frame(
         &mut self,
         page: &Page,
         selection: Option<NodeId>,
+        generation: u64,
+        view_epoch: u64,
         width: u32,
         height: u32,
     ) -> Result<CanvasFrame> {
-        let result = self.frame_inner(page, selection, width, height);
+        let result = self.frame_inner(page, selection, generation, view_epoch, width, height);
         if let Err(error) = &result {
             self.gpu = Err(format!("{error:#}"));
             self.canvas = None;
@@ -94,6 +134,8 @@ impl CanvasHost {
         &mut self,
         page: &Page,
         selection: Option<NodeId>,
+        generation: u64,
+        view_epoch: u64,
         width: u32,
         height: u32,
     ) -> Result<CanvasFrame> {
@@ -120,7 +162,8 @@ impl CanvasHost {
 
         let key = FrameKey {
             page: page.id,
-            selection,
+            generation,
+            view_epoch,
             width,
             height,
         };
@@ -133,16 +176,28 @@ impl CanvasHost {
             });
         }
 
-        let view = content_bounds(page)
-            .map(|bounds| {
-                fit_view(
-                    bounds,
-                    f64::from(width),
-                    f64::from(height),
-                    metrics::CANVAS_MARGIN,
-                )
-            })
-            .unwrap_or(ViewTransform::IDENTITY);
+        let view = match self.view {
+            Some((epoch, id, view)) if epoch == view_epoch && id == page.id => view,
+            _ => {
+                let view = content_bounds(page)
+                    .map(|bounds| {
+                        fit_view(
+                            bounds,
+                            f64::from(width),
+                            f64::from(height),
+                            metrics::CANVAS_MARGIN,
+                        )
+                    })
+                    // An empty page starts with its origin inside the margin.
+                    .unwrap_or(ViewTransform {
+                        scale: 1.0,
+                        offset_x: metrics::CANVAS_MARGIN,
+                        offset_y: metrics::CANVAS_MARGIN,
+                    });
+                self.view = Some((view_epoch, page.id, view));
+                view
+            }
+        };
         let scene = page_scene(page, view, selection);
         let background = page.background;
         let params = RenderParams {

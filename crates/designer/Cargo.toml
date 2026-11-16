@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 designer-core = { path = "../designer-core" }
+designer-engine = { path = "../designer-engine" }
 
 [target.'cfg(windows)'.dependencies]
 designer-render = { path = "../designer-render" }

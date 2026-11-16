@@ -1,6 +1,8 @@
 //! Interface text. The initial language is Spanish; keeping every label here
 //! prepares the interface for translation. All copy is original.
 
+use std::{fmt::Display, path::Path};
+
 use designer_core::NodeKind;
 
 /// Application name, also used in the window title.
@@ -148,7 +150,8 @@ pub const LOCKED: &str = "Bloqueada";
 
 pub const PROPERTIES: &str = "Propiedades";
 pub const NOTHING_SELECTED: &str = "Selecciona una capa para ver sus propiedades.";
-pub const READ_ONLY_NOTE: &str = "Los valores todavía no se pueden editar.";
+pub const READ_ONLY_NOTE: &str =
+    "Las capas se crean, mueven y borran en el lienzo. Estos campos todavía no se editan.";
 pub const NAME: &str = "Nombre";
 pub const KIND: &str = "Tipo";
 pub const POSITION_X: &str = "X";
@@ -169,14 +172,55 @@ pub const TIMELINE: &str = "Línea de tiempo";
 pub const SHOW_TIMELINE: &str = "Mostrar línea de tiempo";
 pub const HIDE_TIMELINE: &str = "Ocultar línea de tiempo";
 pub const NO_ANIMATIONS: &str = "Este documento todavía no tiene animaciones.";
-pub const TOOLS_NOTE: &str = "Las herramientas aún no crean capas.";
+pub const TOOL_PENDING: &str = "Las herramientas Texto y Pluma todavía no crean capas.";
+pub const UNDO: &str = "Deshacer";
+pub const REDO: &str = "Rehacer";
+pub const SAVE: &str = "Guardar";
 
 pub const CANVAS_UNAVAILABLE: &str = "No se puede mostrar el lienzo";
 pub const EMPTY_PAGE: &str = "Página vacía";
 
-pub const RECENT_DOCUMENTS: &str = "Documentos recientes";
+/// Name of a document that has no file yet.
+pub const UNTITLED: &str = "Sin título";
+pub const CURRENT_DOCUMENT: &str = "Documento abierto";
+pub const NOT_SAVED_YET: &str = "Todavía no se ha guardado en un archivo.";
+pub const NEW_DOCUMENT: &str = "Nuevo documento";
+pub const OPEN_DOCUMENT: &str = "Abrir un archivo .dsg…";
+pub const SAVE_AS: &str = "Guardar como…";
 pub const NO_RECENT_DOCUMENTS: &str =
-    "Aún no hay documentos recientes. Guardar y abrir archivos .dsg todavía no está disponible.";
+    "La lista de documentos recientes todavía no está disponible.";
+pub const UNSAVED_TITLE: &str = "Hay cambios sin guardar";
+pub const UNSAVED_DETAIL: &str = "Si continúas, los cambios de este documento se perderán.";
+pub const DISCARD: &str = "Descartar cambios";
+pub const KEEP_EDITING: &str = "Seguir editando";
+
+/// Status after a successful save.
+pub fn saved(path: Option<&Path>) -> String {
+    match path {
+        Some(path) => format!("Guardado en {}", path.display()),
+        None => "Guardado".to_owned(),
+    }
+}
+
+/// Status after a failed save. The technical reason is kept in English.
+pub fn save_failed(error: &dyn Display) -> String {
+    format!("No se pudo guardar; el archivo anterior no ha cambiado. Detalle: {error}")
+}
+
+/// Status after a file could not be opened.
+pub fn open_failed(path: &Path, error: &dyn Display) -> String {
+    format!("No se pudo abrir {}. Detalle: {error}", path.display())
+}
+
+/// Status after a change was rejected by the document model.
+pub fn change_failed(error: &dyn Display) -> String {
+    format!("No se pudo aplicar el cambio. Detalle: {error}")
+}
+
+/// Status after the system file dialog failed.
+pub fn dialog_failed(error: &dyn Display) -> String {
+    format!("No se pudo mostrar el diálogo de archivos. Detalle: {error}")
+}
 pub const OPEN_SAMPLE: &str = "Abrir el documento de ejemplo";
 
 pub const PENDING_TITLE: &str = "Sección pendiente";
@@ -190,7 +234,14 @@ pub const GRAPHICS_UNAVAILABLE: &str = "No disponible";
 pub const AGENTS: &str = "Agentes";
 pub const AGENTS_PENDING: &str = "La conexión con agentes (MCP) todavía no está implementada.";
 pub const SHORTCUTS: &str = "Atajos";
-pub const SHORTCUT_LIST: [(&str, &str); 4] = [
+pub const SHORTCUT_LIST: [(&str, &str); 11] = [
+    ("Ctrl+N", "Nuevo documento"),
+    ("Ctrl+O", "Abrir un archivo .dsg"),
+    ("Ctrl+S / Ctrl+Mayús+S", "Guardar / Guardar como"),
+    ("Ctrl+Z", "Deshacer"),
+    ("Ctrl+Mayús+Z o Ctrl+Y", "Rehacer"),
+    ("Supr o Retroceso", "Borrar la capa seleccionada"),
+    ("Esc", "Cancelar el arrastre o quitar la selección"),
     ("Tab / Mayús+Tab", "Mover el foco"),
     ("Intro o Espacio", "Activar el control enfocado"),
     ("Ctrl+T", "Mostrar u ocultar la línea de tiempo"),
