@@ -1,0 +1,43 @@
+# Designer
+
+An independent, MIT-licensed native design and animation editor being built in
+Rust. Windows is the first target. GPUI owns the interface; Vello will render
+the vector canvas. Native documents will use **`.dsg`**.
+
+## Project status
+
+**Pre-alpha: graphics feasibility work. There is no usable editor or release yet.**
+The repository currently contains the renderer probe foundation and project
+documentation. Document editing, `.dsg` persistence and MCP are planned, not
+implemented. No 60 FPS result has been established.
+
+The project must demonstrate Vello texture composition inside GPUI without a
+per-frame CPU readback before expanding the editor. See the
+[feature matrix](replica/features.csv) and [build log](replica/build-log.md).
+
+## Documentation
+
+- [Build and verify](docs/build.md)
+- [Architecture and graphics gate](replica/architecture.md)
+- [Document format specification (draft)](docs/dsg-format.md)
+- [Agent integration contract (draft)](docs/mcp.md)
+- [Migration from Figma](docs/figma-migration.md)
+- [Forking and maintaining a derivative](docs/forking.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security](SECURITY.md)
+- [Roadmap](ROADMAP.md)
+- [Third-party notices](THIRD_PARTY_NOTICES.md)
+
+## Product direction
+
+Local vector design, typography, auto layout, components, a keyframe timeline,
+path morphing, nested sequences and visual interaction states. The application
+will initially use Spanish UI labels; all public documentation is in English.
+Agents will use the same transactional commands as the interface, live or
+headlessly. There is no developer mode, code generation, cloud collaboration,
+or animation export in scope.
+
+Designer is independent of Figma and is not endorsed by it. Original project
+code and documentation are [MIT licensed](LICENSE). Dependencies retain their
+own licenses. Screenshots and sample documents will be added only when produced
+by the working application; no placeholder screenshots imply completed features.

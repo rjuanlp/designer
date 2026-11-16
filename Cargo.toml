@@ -1,0 +1,26 @@
+[workspace]
+members = ["crates/designer-render"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+vello = "=0.12.0"
+gpui = { version = "=0.2.2", default-features = false, features = ["windows-manifest"] }
+pollster = "0.4"
+anyhow = "1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

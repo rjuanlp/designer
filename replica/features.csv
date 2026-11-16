@@ -1,0 +1,16 @@
+id,surface,feature,clone,note
+F001,S00,Rust workspace,partial,Locked build and verify script pass locally on Windows/MSVC; CI not yet run
+F002,S00,Vello probe scene,partial,Offscreen DX12 rendering verified on hardware; presentation inside GPUI unverified
+F003,S00,GPUI texture composition,no,Required gate before expanding editor
+F004,S01,DSG persistence and recovery,no,Draft format only
+F005,S02,Vector editing and history,no,Planned
+F006,S02,Typography and images,no,Planned
+F007,S02,Auto layout and constraints,no,Planned
+F008,S03,Components variants and styles,no,Planned
+F009,S04,Keyframe timeline and curves,no,Planned
+F010,S04,Morphing and nested sequences,no,Planned
+F011,S05,Interactive states,no,Planned
+F012,S06,Figma structured import,no,Migration guide draft only
+F013,S07,MCP live and headless,no,Contract draft only
+F014,all,Open source documentation,partial,Initial documentation; executable examples await implementation
+F015,all,60 FPS benchmark,no,No measurement yet

@@ -1,0 +1,21 @@
+[package]
+name = "designer-render"
+description = "Designer Vello renderer feasibility tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+vello.workspace = true
+
+# Only the feasibility examples need these; the library stays GPUI-free.
+[dev-dependencies]
+pollster.workspace = true
+anyhow.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+gpui.workspace = true
