@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add Windows live MCP attachment with `--connect`/`--pipe`, capability discovery,
+  bounded local pipe clients and drag/prompt mutation rejection.
+- Hold OS advisory sidecar locks for file-backed sessions, including headless MCP.
+- Extract a pure AccessKit tree builder, add all-screen semantics, focus actions
+  and unchanged-tree caching. Manual screen-reader validation remains pending.
+
 - Establish an MIT-licensed Rust workspace and English project documentation.
 - Add deterministic Vello feasibility-scene construction and input tests.
 - Record the required graphics gate and explicitly unimplemented editor features.

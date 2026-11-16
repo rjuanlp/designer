@@ -25,11 +25,12 @@ morph-key authoring and direct curve editing remain pending in the UI. Hito 4
 and roadmap item 4 therefore remain partial; interactive states are tracked in
 roadmap item 5. See the build log for validation.
 
-Implementation checkpoint **hito 5** is in progress on `codex/hito-5`.
-Interactive prototype states, structured JSON import and a headless stdio MCP
-server are implemented and covered by targeted tests. The remaining
-accessibility and live MCP work will target Windows first and be validated
-there; portability to other platforms is a follow-up after the Windows path is
-working. Do not treat roadmap item 5 as complete or merge until screen-reader
-semantics, shared live GUI/MCP state, cross-process coordination and visual
-validation are resolved.
+Implementation checkpoint **hito 5** on `codex/hito-5-finish` adds Windows
+live GUI/MCP sharing, OS sidecar locks, capability discovery and AccessKit
+semantics for every screen. Automated contracts cover session locking, the
+real MCP binary over a test pipe, prototype transactions and accessibility
+tree integrity. The running app was checked with a UI Automation client and the
+real MCP binary (see the build log). Roadmap item 5 stays partial: screen-reader
+speech (Narrator/NVDA), per-control accessibility rectangles, arrow-key list
+navigation, non-Windows live transport and MCP coverage of model areas that do
+not exist yet (components, styles, assets, layout) remain open.
