@@ -207,6 +207,16 @@ fn cubic_bezier(progress: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
     axis((low + high) / 2.0, y1, y2)
 }
 
+fn interpolate_value(from: f64, to: f64, progress: f64) -> f64 {
+    if progress <= 0.0 {
+        from
+    } else if progress >= 1.0 {
+        to
+    } else {
+        from * (1.0 - progress) + to * progress
+    }
+}
+
 /// A value at a time.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Keyframe {
@@ -244,7 +254,11 @@ impl Track {
         };
         let span = f64::from(to.time_ms - from.time_ms);
         let progress = f64::from(time_ms - from.time_ms) / span;
-        Some(from.value + (to.value - from.value) * from.easing.progress(progress))
+        Some(interpolate_value(
+            from.value,
+            to.value,
+            from.easing.progress(progress),
+        ))
     }
 }
 
@@ -836,6 +850,16 @@ mod tests {
         assert_eq!(track.value_at(499), Some(50.0));
         assert_eq!(track.value_at(500), Some(80.0));
         assert_eq!(track.value_at(9000), Some(80.0));
+
+        let extreme = Track {
+            node: NodeId(1),
+            property: Property::X,
+            keys: vec![
+                key(0, -f64::MAX, Easing::Linear),
+                key(1000, f64::MAX, Easing::Linear),
+            ],
+        };
+        assert_eq!(extreme.value_at(500), Some(0.0));
     }
 
     #[test]
@@ -851,6 +875,14 @@ mod tests {
         assert!(track(Easing::EaseOut).value_at(500).unwrap() > 50.0);
         let middle = track(Easing::EaseInOut).value_at(500).unwrap();
         assert!((45.0..55.0).contains(&middle));
+        for progress in [0.1, 0.25, 0.4] {
+            let ease_in = Easing::EaseIn.progress(progress);
+            let ease_out = Easing::EaseOut.progress(1.0 - progress);
+            assert!((ease_in + ease_out - 1.0).abs() < 1e-6);
+            let ease_in_out = Easing::EaseInOut.progress(progress);
+            let reverse = Easing::EaseInOut.progress(1.0 - progress);
+            assert!((ease_in_out + reverse - 1.0).abs() < 1e-6);
+        }
         assert_eq!(Easing::Constant.progress(1.0), 1.0);
         assert_eq!(Easing::EaseIn.progress(-1.0), 0.0);
         assert_eq!(Easing::EaseOut.progress(2.0), 1.0);
@@ -901,6 +933,11 @@ mod tests {
 
     #[test]
     fn morph_tracks_interpolate_matching_paths_and_hold_the_last_key() {
+        assert!(
+            triangle(0.0)
+                .interpolate(&triangle(0.2), f64::NAN)
+                .is_none()
+        );
         let mut page = page();
         page.nodes[0].kind = NodeKind::Path {
             path: triangle(0.0),

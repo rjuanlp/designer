@@ -5,8 +5,9 @@
 2. **Active:** native shell (read-only structure done) and the
    create/draw/animate/save/reopen/MCP/undo vertical slice.
 3. Vector tools, typography, layout, components and local styles.
-4. Advanced animation, nested sequences, morphing and interactive states.
-5. Structured Figma migration, accessibility and complete MCP capability coverage.
+4. Advanced animation, nested sequences and morphing.
+5. Interactive states, structured Figma migration, accessibility and complete
+   MCP capability coverage.
 6. Hardware benchmark, packaging, fork onboarding and release review.
 
 These are milestones, not completed capabilities or promised dates. See
@@ -17,9 +18,9 @@ Implementation checkpoint **hito 3** (separate from roadmap item 3): basic
 create/draw/save/reopen/undo is implemented. Text, animation UI and MCP in the
 full vertical slice remain pending. See the build log for validation.
 
-Implementation checkpoint **hito 4** (separate from roadmap item 4): basic
-keyframe editing, playback, preset easing curves, and nested sequences are
-implemented. Core path rendering and same-topology morph evaluation are also
-implemented, but path editing and morph-key authoring remain pending in the UI.
-Direct curve editing and interactive states remain pending; this does not
-complete roadmap item 4. See the build log for validation.
+Implementation checkpoint **hito 4**: keyframe editing, playback, preset
+easing curves and nested sequences are implemented. Core path rendering and
+same-topology morph evaluation are also implemented, but path editing,
+morph-key authoring and direct curve editing remain pending in the UI. Hito 4
+and roadmap item 4 therefore remain partial; interactive states are tracked in
+roadmap item 5. See the build log for validation.

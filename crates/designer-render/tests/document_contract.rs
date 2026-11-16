@@ -1,7 +1,7 @@
 //! Display-list contract tests. They need no GPU.
 use designer_core::{
-    Animation, Color, Node, NodeId, NodeKind, Page, PageId, PathData, PathPoint, PathSegment, Rect,
-    sample_document,
+    Animation, Color, Easing, Keyframe, Node, NodeId, NodeKind, Page, PageId, PathData, PathPoint,
+    PathSegment, Property, Rect, Track, sample_document,
 };
 use designer_render::document::{
     Shape, ViewTransform, absolute_bounds, content_bounds, display_list, fit_view, page_scene,
@@ -222,6 +222,101 @@ fn paths_render_and_hit_test_only_inside_their_fill() {
     assert_eq!(hit_test(&page, 50.0, 80.0), Some(NodeId(1)));
     assert_eq!(hit_test(&page, 5.0, 5.0), None);
     let _ = page_scene(&page, ViewTransform::IDENTITY, None);
+}
+
+#[test]
+fn node_and_ancestor_opacity_combine_for_rendering_and_hit_testing() {
+    use designer_render::document::hit_test;
+
+    let mut child = node(
+        2,
+        NodeKind::Rectangle { corner_radius: 0.0 },
+        Rect::new(0.0, 0.0, 100.0, 100.0),
+        vec![],
+    );
+    child.opacity = 0.5;
+    child.fill = Some(Color {
+        r: 10,
+        g: 20,
+        b: 30,
+        a: 200,
+    });
+    let mut parent = node(
+        1,
+        NodeKind::Group,
+        Rect::new(0.0, 0.0, 100.0, 100.0),
+        vec![child],
+    );
+    parent.fill = None;
+    parent.opacity = 0.5;
+    let mut page = page(vec![parent]);
+
+    assert_eq!(display_list(&page)[0].fill.a, 50);
+    assert_eq!(hit_test(&page, 50.0, 50.0), Some(NodeId(2)));
+
+    page.nodes[0].opacity = 0.0;
+    assert!(display_list(&page).is_empty());
+    assert_eq!(hit_test(&page, 50.0, 50.0), None);
+}
+
+#[test]
+fn animated_opacity_changes_the_rendered_alpha() {
+    let node = node(
+        1,
+        NodeKind::Ellipse,
+        Rect::new(0.0, 0.0, 100.0, 100.0),
+        vec![],
+    );
+    let mut page = page(vec![node]);
+    page.animation.tracks.push(Track {
+        node: NodeId(1),
+        property: Property::Opacity,
+        keys: vec![
+            Keyframe {
+                time_ms: 0,
+                value: 1.0,
+                easing: Easing::Linear,
+            },
+            Keyframe {
+                time_ms: 1000,
+                value: 0.0,
+                easing: Easing::Linear,
+            },
+        ],
+    });
+
+    assert_eq!(display_list(&page.at_time(500))[0].fill.a, 128);
+    assert!(display_list(&page.at_time(1000)).is_empty());
+}
+
+#[test]
+fn path_hit_testing_matches_the_nonzero_fill_rule() {
+    use designer_render::document::hit_test;
+
+    let path = PathData {
+        start: PathPoint { x: 0.2, y: 0.2 },
+        segments: [
+            PathPoint { x: 0.8, y: 0.2 },
+            PathPoint { x: 0.8, y: 0.8 },
+            PathPoint { x: 0.2, y: 0.8 },
+            PathPoint { x: 0.2, y: 0.2 },
+            PathPoint { x: 0.8, y: 0.2 },
+            PathPoint { x: 0.8, y: 0.8 },
+            PathPoint { x: 0.2, y: 0.8 },
+        ]
+        .into_iter()
+        .map(|end| PathSegment::LineTo { end })
+        .collect(),
+        closed: true,
+    };
+    let page = page(vec![node(
+        1,
+        NodeKind::Path { path },
+        Rect::new(0.0, 0.0, 100.0, 100.0),
+        vec![],
+    )]);
+
+    assert_eq!(hit_test(&page, 50.0, 50.0), Some(NodeId(1)));
 }
 
 #[test]

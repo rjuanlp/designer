@@ -1027,9 +1027,13 @@ impl Shell {
                     |this, radius| this.child(row(strings::RADIUS, text(format_number(radius)))),
                 )
                 .child(row(strings::FILL, fill))
+                .child(row(
+                    strings::OPACITY,
+                    text(format!("{} %", format_number(node.opacity * 100.0))),
+                ))
                 .when_some(node.fill, |this, color| {
                     this.child(row(
-                        strings::OPACITY,
+                        strings::FILL_OPACITY,
                         text(format!("{} %", color.opacity_percent())),
                     ))
                 })

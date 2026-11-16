@@ -163,6 +163,7 @@ pub const RADIUS: &str = "Radio";
 pub const FILL: &str = "Relleno";
 pub const NO_FILL: &str = "Sin relleno";
 pub const OPACITY: &str = "Opacidad";
+pub const FILL_OPACITY: &str = "Opacidad del relleno";
 pub const CONTENT: &str = "Contenido";
 pub const VISIBLE: &str = "Visible";
 pub const YES: &str = "Sí";

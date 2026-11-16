@@ -11,7 +11,7 @@
 use std::{
     error::Error,
     fmt, fs,
-    io::{self, Cursor, Read, Seek, Write},
+    io::{self, Cursor, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
@@ -21,8 +21,8 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter, result::ZipError, write::Sim
 
 /// Value of `format` in the manifest.
 pub const FORMAT: &str = "designer-dsg";
-/// Schema version this build reads and writes.
-pub const SCHEMA_VERSION: u32 = 1;
+/// Newest schema version this build reads and writes.
+pub const SCHEMA_VERSION: u32 = 2;
 /// File extension, without the dot.
 pub const EXTENSION: &str = "dsg";
 /// Largest accepted `.dsg` file.
@@ -153,6 +153,18 @@ fn read_entry<R: Read + Seek>(
 
 /// Read and validate a document from `.dsg` data.
 pub fn from_reader<R: Read + Seek>(reader: R) -> Result<Document, DsgError> {
+    let mut reader = reader;
+    let start = reader.stream_position()?;
+    let end = reader.seek(SeekFrom::End(0))?;
+    if end < start {
+        return Err(DsgError::NotAnArchive(
+            "reader returned an invalid length".to_owned(),
+        ));
+    }
+    if end - start > MAX_FILE_BYTES {
+        return Err(DsgError::TooLarge("the file"));
+    }
+    reader.seek(SeekFrom::Start(start))?;
     let mut archive = ZipArchive::new(reader).map_err(archive_error)?;
     if archive.len() > MAX_ENTRIES {
         return Err(DsgError::TooLarge("the archive entry list"));
@@ -193,9 +205,6 @@ pub fn from_bytes(bytes: &[u8]) -> Result<Document, DsgError> {
 /// Open a `.dsg` file. The file is only read.
 pub fn open(path: &Path) -> Result<Document, DsgError> {
     let file = fs::File::open(path)?;
-    if file.metadata()?.len() > MAX_FILE_BYTES {
-        return Err(DsgError::TooLarge("the file"));
-    }
     from_reader(io::BufReader::new(file))
 }
 

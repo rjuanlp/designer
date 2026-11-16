@@ -1,8 +1,10 @@
 //! Timeline controls share the same transactions and history as canvas edits.
 
-use designer_core::{Easing, MAX_DURATION_MS, Property, Sequence, SequenceId};
+use designer_core::{Animation, Easing, MAX_DURATION_MS, Property, Sequence, SequenceId};
 
 use super::*;
+
+const DURATION_STEP_MS: u32 = 500;
 
 fn row() -> Div {
     div()
@@ -48,10 +50,26 @@ fn append_sequence_rows(
     }
 }
 
-fn has_tracks(sequences: &[Sequence]) -> bool {
-    sequences
-        .iter()
-        .any(|sequence| !sequence.tracks.is_empty() || has_tracks(&sequence.children))
+fn sequence_has_tracks(sequences: &[Sequence]) -> bool {
+    sequences.iter().any(|sequence| {
+        !sequence.tracks.is_empty()
+            || !sequence.morph_tracks.is_empty()
+            || sequence_has_tracks(&sequence.children)
+    })
+}
+
+fn has_tracks(animation: &Animation) -> bool {
+    !animation.tracks.is_empty()
+        || !animation.morph_tracks.is_empty()
+        || sequence_has_tracks(&animation.sequences)
+}
+
+fn smaller_duration(duration: u32) -> u32 {
+    duration.saturating_sub(DURATION_STEP_MS).max(1)
+}
+
+fn larger_duration(duration: u32, maximum: u32) -> u32 {
+    duration.saturating_add(DURATION_STEP_MS).min(maximum)
 }
 
 impl Shell {
@@ -295,7 +313,7 @@ impl Shell {
                 } else {
                     strings::PLAY
                 },
-                !page.animation.tracks.is_empty() || has_tracks(&page.animation.sequences),
+                has_tracks(&page.animation),
                 palette,
                 cx.listener(move |this, _, _, cx| {
                     this.drag = None;
@@ -343,54 +361,57 @@ impl Shell {
             .on_click(cx.listener(move |this, _, _, cx| this.seek_animation(at, cx)))
         }));
         let current_sequence_offset = sequence.map_or(0, |sequence| sequence.offset_ms);
-        let duration_less = duration.saturating_sub(500).max(1);
-        let duration_more = if active_sequence.is_some() {
-            duration
-                .saturating_add(500)
-                .min(parent_duration.saturating_sub(current_sequence_offset))
+        let duration_less = smaller_duration(duration);
+        let duration_maximum = if active_sequence.is_some() {
+            parent_duration.saturating_sub(current_sequence_offset)
         } else {
-            duration.saturating_add(500).min(MAX_DURATION_MS)
+            MAX_DURATION_MS
         };
+        let duration_more = larger_duration(duration, duration_maximum);
         let duration_row = row()
             .child(muted(strings::DURATION, palette))
-            .child(
-                button("duration-less", strings::DURATION_LESS, palette, false).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        let operation = match this.animation.active_sequence {
-                            Some(sequence) => Operation::SetSequenceTiming {
-                                page: this.page,
-                                sequence,
-                                offset_ms: current_sequence_offset,
-                                duration_ms: duration_less,
-                            },
-                            None => Operation::SetDuration {
-                                page: this.page,
-                                duration_ms: duration.saturating_sub(500).max(100),
-                            },
-                        };
-                        this.animation_command(operation, cx);
-                    }),
-                ),
-            )
-            .child(
-                button("duration-more", strings::DURATION_MORE, palette, false).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        let operation = match this.animation.active_sequence {
-                            Some(sequence) => Operation::SetSequenceTiming {
-                                page: this.page,
-                                sequence,
-                                offset_ms: current_sequence_offset,
-                                duration_ms: duration_more,
-                            },
-                            None => Operation::SetDuration {
-                                page: this.page,
-                                duration_ms: duration.saturating_add(500).min(MAX_DURATION_MS),
-                            },
-                        };
-                        this.animation_command(operation, cx);
-                    }),
-                ),
-            );
+            .child(command(
+                "duration-less",
+                strings::DURATION_LESS,
+                duration_less < duration,
+                palette,
+                cx.listener(move |this, _, _, cx| {
+                    let operation = match this.animation.active_sequence {
+                        Some(sequence) => Operation::SetSequenceTiming {
+                            page: this.page,
+                            sequence,
+                            offset_ms: current_sequence_offset,
+                            duration_ms: duration_less,
+                        },
+                        None => Operation::SetDuration {
+                            page: this.page,
+                            duration_ms: duration_less,
+                        },
+                    };
+                    this.animation_command(operation, cx);
+                }),
+            ))
+            .child(command(
+                "duration-more",
+                strings::DURATION_MORE,
+                duration_more > duration,
+                palette,
+                cx.listener(move |this, _, _, cx| {
+                    let operation = match this.animation.active_sequence {
+                        Some(sequence) => Operation::SetSequenceTiming {
+                            page: this.page,
+                            sequence,
+                            offset_ms: current_sequence_offset,
+                            duration_ms: duration_more,
+                        },
+                        None => Operation::SetDuration {
+                            page: this.page,
+                            duration_ms: duration_more,
+                        },
+                    };
+                    this.animation_command(operation, cx);
+                }),
+            ));
         let properties = row().children(Property::ALL.into_iter().enumerate().map(
             |(index, property)| {
                 button(
@@ -518,12 +539,67 @@ impl Shell {
             .child(editor)
             .child(keys)
             .child(muted(
-                if page.animation.tracks.is_empty() && !has_tracks(&page.animation.sequences) {
+                if !has_tracks(&page.animation) {
                     strings::NO_ANIMATIONS
                 } else {
                     strings::ANIMATION_HINT
                 },
                 palette,
             ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use designer_core::{MorphKeyframe, MorphTrack, NodeId, PathData, PathPoint, PathSegment};
+
+    fn morph_track() -> MorphTrack {
+        MorphTrack {
+            node: NodeId(1),
+            keys: vec![MorphKeyframe {
+                time_ms: 0,
+                path: PathData {
+                    start: PathPoint { x: 0.0, y: 0.0 },
+                    segments: vec![PathSegment::LineTo {
+                        end: PathPoint { x: 1.0, y: 1.0 },
+                    }],
+                    closed: true,
+                },
+                easing: Easing::Linear,
+            }],
+        }
+    }
+
+    #[test]
+    fn morph_only_animations_enable_playback_and_are_not_reported_empty() {
+        let mut animation = Animation::default();
+        assert!(!has_tracks(&animation));
+
+        animation.morph_tracks.push(morph_track());
+        assert!(has_tracks(&animation));
+
+        animation.morph_tracks.clear();
+        animation.sequences.push(Sequence {
+            id: SequenceId(1),
+            name: "Morph".into(),
+            offset_ms: 0,
+            duration_ms: 1000,
+            tracks: Vec::new(),
+            morph_tracks: vec![morph_track()],
+            children: Vec::new(),
+        });
+        assert!(has_tracks(&animation));
+    }
+
+    #[test]
+    fn duration_controls_clamp_and_disable_at_their_bounds() {
+        assert_eq!(smaller_duration(1000), 500);
+        assert_eq!(smaller_duration(100), 1);
+        assert_eq!(larger_duration(1000, 1200), 1200);
+        assert_eq!(
+            larger_duration(MAX_DURATION_MS, MAX_DURATION_MS),
+            MAX_DURATION_MS
+        );
     }
 }

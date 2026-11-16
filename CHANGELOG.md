@@ -27,5 +27,7 @@
   held end states.
 - Add normalized line/cubic path geometry, rendering, hit testing, and
   same-topology morph keyframes on page and sequence timelines.
+- Write the updated `.dsg` path/morph schema as version 2 while continuing to
+  read version 1 documents.
 
 There is no released editor binary.

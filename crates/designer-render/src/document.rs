@@ -90,12 +90,24 @@ fn shape_of(node: &Node) -> Option<Shape> {
     }
 }
 
-fn collect(node: &Node, origin: (f64, f64), items: &mut Vec<DrawItem>) {
+fn fill_with_opacity(mut fill: Color, opacity: f64) -> Option<Color> {
+    fill.a = (f64::from(fill.a) * opacity).round() as u8;
+    (fill.a != 0).then_some(fill)
+}
+
+fn collect(node: &Node, origin: (f64, f64), inherited_opacity: f64, items: &mut Vec<DrawItem>) {
     if !node.visible {
         return;
     }
+    let opacity = inherited_opacity * node.opacity;
+    if opacity == 0.0 {
+        return;
+    }
     let bounds = node.bounds.translated(origin.0, origin.1);
-    if let (Some(shape), Some(fill)) = (shape_of(node), node.fill) {
+    if let (Some(shape), Some(fill)) = (
+        shape_of(node),
+        node.fill.and_then(|fill| fill_with_opacity(fill, opacity)),
+    ) {
         items.push(DrawItem {
             node: node.id,
             bounds,
@@ -104,7 +116,7 @@ fn collect(node: &Node, origin: (f64, f64), items: &mut Vec<DrawItem>) {
         });
     }
     for child in &node.children {
-        collect(child, (bounds.x, bounds.y), items);
+        collect(child, (bounds.x, bounds.y), opacity, items);
     }
 }
 
@@ -115,7 +127,7 @@ fn collect(node: &Node, origin: (f64, f64), items: &mut Vec<DrawItem>) {
 pub fn display_list(page: &Page) -> Vec<DrawItem> {
     let mut items = Vec::new();
     for node in &page.nodes {
-        collect(node, (0.0, 0.0), &mut items);
+        collect(node, (0.0, 0.0), 1.0, &mut items);
     }
     items
 }
@@ -209,19 +221,28 @@ fn path_contains(path: &PathData, bounds: Rect, x: f64, y: f64) -> bool {
             }
         }
     }
-    let mut inside = false;
+    let mut winding = 0_i32;
     for index in 0..points.len() {
         let (x1, y1) = points[index];
         let (x2, y2) = points[(index + 1) % points.len()];
-        if (y1 > y) != (y2 > y) && x < (x2 - x1) * (y - y1) / (y2 - y1) + x1 {
-            inside = !inside;
+        let is_left = (x2 - x1) * (y - y1) - (x - x1) * (y2 - y1);
+        if y1 <= y {
+            if y2 > y && is_left > 0.0 {
+                winding += 1;
+            }
+        } else if y2 <= y && is_left < 0.0 {
+            winding -= 1;
         }
     }
-    inside
+    winding != 0
 }
 
-fn hit(node: &Node, origin: (f64, f64), x: f64, y: f64) -> Option<NodeId> {
+fn hit(node: &Node, origin: (f64, f64), inherited_opacity: f64, x: f64, y: f64) -> Option<NodeId> {
     if !node.visible || node.locked {
+        return None;
+    }
+    let opacity = inherited_opacity * node.opacity;
+    if opacity == 0.0 {
         return None;
     }
     let bounds = node.bounds.translated(origin.0, origin.1);
@@ -229,10 +250,15 @@ fn hit(node: &Node, origin: (f64, f64), x: f64, y: f64) -> Option<NodeId> {
     node.children
         .iter()
         .rev()
-        .find_map(|child| hit(child, (bounds.x, bounds.y), x, y))
+        .find_map(|child| hit(child, (bounds.x, bounds.y), opacity, x, y))
         .or_else(|| {
             let shape = shape_of(node)?;
-            (node.fill.is_some() && contains(&shape, bounds, x, y)).then_some(node.id)
+            (node
+                .fill
+                .and_then(|fill| fill_with_opacity(fill, opacity))
+                .is_some()
+                && contains(&shape, bounds, x, y))
+            .then_some(node.id)
         })
 }
 
@@ -244,7 +270,7 @@ pub fn hit_test(page: &Page, x: f64, y: f64) -> Option<NodeId> {
     page.nodes
         .iter()
         .rev()
-        .find_map(|node| hit(node, (0.0, 0.0), x, y))
+        .find_map(|node| hit(node, (0.0, 0.0), 1.0, x, y))
 }
 
 /// Smallest rectangle containing every top-level node, if the page has any.

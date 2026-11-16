@@ -1,7 +1,7 @@
 //! Contract of the `.dsg` reader and writer: what round-trips and what is
 //! refused.
 
-use std::io::{Cursor, Write};
+use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 
 use designer_core::{Document, sample_document};
 use designer_engine::dsg::{self, DsgError};
@@ -31,12 +31,63 @@ fn scratch(name: &str) -> std::path::PathBuf {
     directory
 }
 
+struct OversizedReader;
+
+impl Read for OversizedReader {
+    fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+        Ok(0)
+    }
+}
+
+impl Seek for OversizedReader {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        Ok(match position {
+            SeekFrom::End(_) => dsg::MAX_FILE_BYTES + 1,
+            _ => 0,
+        })
+    }
+}
+
 #[test]
 fn the_sample_document_round_trips_with_stable_identifiers() {
     let document = sample_document();
     let bytes = dsg::to_bytes(&document).expect("writes");
     assert_eq!(&bytes[..2], b"PK", "a .dsg file is a ZIP archive");
     assert_eq!(dsg::from_bytes(&bytes).expect("reads"), document);
+}
+
+#[test]
+fn writer_marks_the_path_and_morph_schema_as_version_two() {
+    let bytes = dsg::to_bytes(&sample_document()).expect("writes");
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("archive");
+    let mut manifest = String::new();
+    archive
+        .by_name("manifest.json")
+        .expect("manifest")
+        .read_to_string(&mut manifest)
+        .expect("manifest text");
+    let manifest: serde_json::Value = serde_json::from_str(&manifest).expect("manifest json");
+    assert_eq!(manifest["schema_version"], 2);
+}
+
+#[test]
+fn version_one_documents_without_morph_fields_remain_readable() {
+    let document = Document::empty("legacy");
+    let mut legacy_json = serde_json::to_value(&document).expect("document json");
+    let animation = legacy_json["pages"][0]["animation"]
+        .as_object_mut()
+        .expect("animation object");
+    animation.remove("morph_tracks");
+    let legacy_json = serde_json::to_vec(&legacy_json).expect("legacy json");
+    let bytes = archive(&[
+        ("manifest.json", GOOD_MANIFEST.as_bytes()),
+        ("document.json", &legacy_json),
+    ]);
+
+    assert_eq!(
+        dsg::from_bytes(&bytes).expect("reads version one"),
+        document
+    );
 }
 
 #[test]
@@ -112,13 +163,21 @@ fn damaged_and_foreign_files_are_refused() {
     let future = archive(&[
         (
             "manifest.json",
-            br#"{"format":"designer-dsg","schema_version":2}"#,
+            br#"{"format":"designer-dsg","schema_version":3}"#,
         ),
         ("document.json", &good),
     ]);
     assert!(matches!(
         dsg::from_bytes(&future),
-        Err(DsgError::UnsupportedVersion(2))
+        Err(DsgError::UnsupportedVersion(3))
+    ));
+}
+
+#[test]
+fn readers_enforce_the_archive_size_limit_before_parsing() {
+    assert!(matches!(
+        dsg::from_reader(OversizedReader),
+        Err(DsgError::TooLarge("the file"))
     ));
 }
 

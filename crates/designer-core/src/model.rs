@@ -84,6 +84,8 @@ impl Rect {
             .all(|value| value.is_finite())
             && self.width >= 0.0
             && self.height >= 0.0
+            && (self.x + self.width).is_finite()
+            && (self.y + self.height).is_finite()
     }
 }
 
@@ -202,7 +204,11 @@ impl PathData {
 
     /// Interpolate between matching paths.
     pub fn interpolate(&self, other: &Self, progress: f64) -> Option<Self> {
-        if !self.has_same_topology(other) {
+        if !progress.is_finite()
+            || !self.is_valid()
+            || !other.is_valid()
+            || !self.has_same_topology(other)
+        {
             return None;
         }
         let progress = progress.clamp(0.0, 1.0);
@@ -306,8 +312,7 @@ pub enum ModelError {
     DuplicatePage(PageId),
     /// Two nodes share an identifier.
     DuplicateNode(NodeId),
-    /// A node has non-finite geometry, a negative size or radius, or an
-    /// opacity outside 0 to 1.
+    /// A node has invalid geometry or path data, or an opacity outside 0 to 1.
     InvalidGeometry(NodeId),
     /// `next_node_id` is not greater than an identifier in use.
     StaleNextNodeId,
@@ -354,7 +359,11 @@ impl Node {
             .find_map(|child| child.find_mut(id))
     }
 
-    fn validate(&self, seen: &mut HashSet<NodeId>) -> Result<(), ModelError> {
+    fn validate(
+        &self,
+        seen: &mut HashSet<NodeId>,
+        parent_origin: (f64, f64),
+    ) -> Result<(), ModelError> {
         if !seen.insert(self.id) {
             return Err(ModelError::DuplicateNode(self.id));
         }
@@ -369,12 +378,18 @@ impl Node {
             _ => true,
         };
         let opacity_valid = self.opacity.is_finite() && (0.0..=1.0).contains(&self.opacity);
-        if !self.bounds.is_valid() || !radius_valid || !path_valid || !opacity_valid {
+        let absolute_bounds = self.bounds.translated(parent_origin.0, parent_origin.1);
+        if !self.bounds.is_valid()
+            || !absolute_bounds.is_valid()
+            || !radius_valid
+            || !path_valid
+            || !opacity_valid
+        {
             return Err(ModelError::InvalidGeometry(self.id));
         }
         self.children
             .iter()
-            .try_for_each(|child| child.validate(seen))
+            .try_for_each(|child| child.validate(seen, (absolute_bounds.x, absolute_bounds.y)))
     }
 }
 
@@ -435,7 +450,7 @@ impl Document {
             let before = nodes.clone();
             page.nodes
                 .iter()
-                .try_for_each(|node| node.validate(&mut nodes))?;
+                .try_for_each(|node| node.validate(&mut nodes, (0.0, 0.0)))?;
             let on_page = |id: NodeId| nodes.contains(&id) && !before.contains(&id);
             let path_of = |id: NodeId| match &page.node(id)?.kind {
                 NodeKind::Path { path } => Some(path.clone()),
@@ -505,12 +520,22 @@ mod tests {
             Rect::new(f64::NAN, 0.0, 1.0, 1.0),
             Rect::new(0.0, f64::INFINITY, 1.0, 1.0),
             Rect::new(0.0, 0.0, -1.0, 1.0),
+            Rect::new(f64::MAX, 0.0, f64::MAX, 1.0),
         ] {
             assert_eq!(
                 document(vec![node(7, bad, vec![])]).validate(),
                 Err(ModelError::InvalidGeometry(NodeId(7)))
             );
         }
+        let overflowed_child = node(
+            1,
+            Rect::new(1.0e308, 0.0, 0.0, 0.0),
+            vec![node(2, Rect::new(1.0e308, 0.0, 0.0, 0.0), vec![])],
+        );
+        assert_eq!(
+            document(vec![overflowed_child]).validate(),
+            Err(ModelError::InvalidGeometry(NodeId(2)))
+        );
 
         let mut stale = document(vec![node(7, UNIT, vec![])]);
         stale.next_node_id = 7;
