@@ -79,8 +79,9 @@ Commits posteriores (`4c7bcfe`, `5613885` y el arreglo del temporizador):
   `FocusHandle` por elemento). **Probado**: capas (Abajo/Fin), recientes,
   secciones (Izquierda con vuelta) y paneles estrechos (Derecha); dentro de un
   campo, Inicio/Derecha/Fin mueven el cursor sin cambiar sección ni capa.
-  **Sin probar en la app**: estados del prototipo y filas de la línea de
-  tiempo.
+  También probados después: estados del prototipo, secuencias y claves de la
+  línea de tiempo, overrides por estado desde el inspector, desplazamiento con
+  la rueda y mover a 156 % (X 24→126 con el objeto bajo el puntero).
 - Recuperación. **Probado tras matar el proceso**: aviso "Hay una sesión
   recuperable" con Recuperar/Descartar/Dejar intacta; Recuperar devuelve el
   cambio como no guardado y borra la copia vieja solo después de escribir la
@@ -99,11 +100,19 @@ Problemas abiertos conocidos:
 2. Un clic simulado en la X de la barra de título no cerró la ventana;
    `WM_CLOSE` sí mostró el aviso y cerró bien. Comprobar con un clic real.
 3. En el layout estrecho la etiqueta de zoom muestra "—".
-4. Sin validar en la app: Ctrl+rueda, pan con botón central y
-   Espacio+arrastre, overrides de estado del inspector, mover a zoom distinto
-   de 100 %, teclas muertas/IME.
+4. Necesitan prueba con teclado y ratón reales (la entrada simulada no es
+   concluyente): Ctrl+rueda y Ctrl+= no hicieron zoom (la barra sí; Ctrl+T,
+   Ctrl+S y Ctrl+Mayús+L sí funcionan, así que se sospecha del modificador
+   inyectado o de la tecla `=` en la distribución latinoamericana); la tilde
+   muerta + `a` dio `a` sin acento; pan con botón central y Espacio+arrastre
+   no se pueden simular.
+5. Tras cerrar la línea de tiempo con el foco dentro, los atajos no responden
+   hasta hacer clic en el lienzo (el foco queda en un elemento que ya no
+   existe). Arreglo propuesto: devolver el foco al shell al ocultar la línea
+   de tiempo.
 
-Falta del paquete 1: la validación GUI del punto 4 y fusionar en `main`.
+Falta del paquete 1: prueba manual del punto 4, decidir el punto 5 y
+fusionar en `main`.
 
 ## Paquete 2: primer corte
 
