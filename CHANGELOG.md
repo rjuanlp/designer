@@ -4,7 +4,11 @@
 
 - Add a pure single-line editing state with UTF-16 replacement ranges,
   composition replacement, selection, deletion, commit and cancellation tests.
-  GPUI input-handler and inspector integration remain pending.
+  Connect it to a GPUI input handler and editable inspector, with clipboard,
+  composition, commit/cancel, validation and session undo support.
+- Add layer visibility/lock/order controls, locked-selection deletion protection,
+  prototype-state property overrides and reset controls, and AccessKit SetValue.
+  Graphical IME and screen-reader validation remains pending.
 - Extend the operation serialization round-trip fixture to cover all five
   new editor operations.
 - Centralize application identity and per-user data-directory resolution.
@@ -14,7 +18,7 @@
   legacy frames to unclipped. Render ancestor frame clips and honor them in hits.
 - Honor Figma frame clipping and enable clipping for newly drawn frames.
 - Add screen/document transform round trips and bounded pointer-anchor zoom math.
-  Inspector editing, interactive zoom/pan, arrow navigation, preferences and
+  Interactive zoom/pan, arrow navigation, preferences and
   recovery remain outstanding.
 
 - Add Windows live MCP attachment with `--connect`/`--pipe`, capability discovery,

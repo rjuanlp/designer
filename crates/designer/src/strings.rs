@@ -143,13 +143,10 @@ pub fn kind_label(kind: &NodeKind) -> &'static str {
 pub const PAGES: &str = "Páginas";
 pub const LAYERS: &str = "Capas";
 pub const NO_LAYERS: &str = "Esta página todavía no tiene capas.";
-pub const HIDDEN: &str = "Oculta";
 pub const LOCKED: &str = "Bloqueada";
 
 pub const PROPERTIES: &str = "Propiedades";
 pub const NOTHING_SELECTED: &str = "Selecciona una capa para ver sus propiedades.";
-pub const READ_ONLY_NOTE: &str =
-    "Las capas se crean, mueven y borran en el lienzo. Estos campos todavía no se editan.";
 pub const NAME: &str = "Nombre";
 pub const KIND: &str = "Tipo";
 pub const POSITION_X: &str = "X";
@@ -160,12 +157,10 @@ pub const RADIUS: &str = "Radio";
 pub const FILL: &str = "Relleno";
 pub const NO_FILL: &str = "Sin relleno";
 pub const OPACITY: &str = "Opacidad";
-pub const FILL_OPACITY: &str = "Opacidad del relleno";
 pub const CONTENT: &str = "Contenido";
 pub const VISIBLE: &str = "Visible";
 pub const YES: &str = "Sí";
 pub const NO: &str = "No";
-pub const TEXT_NOT_RENDERED: &str = "El texto aún no se dibuja en el lienzo.";
 
 pub const TIMELINE: &str = "Línea de tiempo";
 pub const SHOW_TIMELINE: &str = "Mostrar línea de tiempo";
@@ -176,16 +171,16 @@ pub const PLAY: &str = "Reproducir";
 pub const PLAYING: &str = "Reproduciendo";
 pub const PAUSE: &str = "Pausar";
 pub const BASE_VALUES: &str = "Editar base";
-pub const TIME_BACK: &str = "−100 ms";
-pub const TIME_FORWARD: &str = "+100 ms";
+pub const TIME_BACK: &str = "Retroceder 100 ms";
+pub const TIME_FORWARD: &str = "Avanzar 100 ms";
 pub const DURATION: &str = "Duración";
-pub const DURATION_LESS: &str = "−500 ms";
-pub const DURATION_MORE: &str = "+500 ms";
+pub const DURATION_LESS: &str = "Acortar la duración 500 ms";
+pub const DURATION_MORE: &str = "Alargar la duración 500 ms";
 pub const ADD_KEY: &str = "Añadir clave";
 pub const REPLACE_KEY: &str = "Actualizar clave";
 pub const REMOVE_KEY: &str = "Quitar clave";
-pub const VALUE_LESS: &str = "− Valor";
-pub const VALUE_MORE: &str = "+ Valor";
+pub const VALUE_LESS: &str = "Reducir el valor";
+pub const VALUE_MORE: &str = "Aumentar el valor";
 pub const LINEAR: &str = "Lineal";
 pub const CONSTANT: &str = "Constante";
 pub const EASE_IN: &str = "Entrada suave";
@@ -379,6 +374,31 @@ pub const TOOLS_ACTIONS: &str = "Herramientas y acciones";
 /// Document lock error.
 pub const DOCUMENT_LOCKED: &str =
     "Otro proceso tiene abierto este documento. Cierra esa sesión antes de abrirlo o guardarlo.";
+
+/// Inspector validation feedback.
+pub const INVALID_PROPERTY: &str = "Valor no válido. Se ha restaurado el valor anterior.";
+pub const CLIPS_CONTENT: &str = "Recortar contenido";
+pub const RESET_OVERRIDE: &str = "Restablecer propiedad";
+pub const ADD_FILL: &str = "Añadir relleno";
+pub const HIDE_LAYER: &str = "Ocultar capa";
+pub const SHOW_LAYER: &str = "Mostrar capa";
+pub const LOCK_LAYER: &str = "Bloquear capa";
+pub const UNLOCK_LAYER: &str = "Desbloquear capa";
+pub const RAISE_LAYER: &str = "Subir capa";
+pub const LOWER_LAYER: &str = "Bajar capa";
+
+pub const ZOOM_IN: &str = "Acercar";
+pub const ZOOM_OUT: &str = "Alejar";
+pub const ZOOM_FIT: &str = "Ajustar al contenido";
+pub const ZOOM_RESET: &str = "Zoom al 100 %";
+
+/// The zoom as a whole percentage, or a dash before the first frame.
+pub fn zoom_percent(zoom: Option<f64>) -> String {
+    match zoom {
+        Some(zoom) => format!("{} %", (zoom * 100.0).round()),
+        None => "—".to_owned(),
+    }
+}
 
 #[cfg(test)]
 mod tests {

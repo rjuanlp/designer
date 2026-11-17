@@ -26,12 +26,18 @@ struct Gpu {
     adapter: String,
 }
 
+/// Smallest zoom: 5%.
+pub const MIN_ZOOM: f64 = 0.05;
+/// Largest zoom: 6400%.
+pub const MAX_ZOOM: f64 = 64.0;
+
 /// Everything that determines the pixels of a frame.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct FrameKey {
     page: PageId,
     generation: u64,
     view_epoch: u64,
+    view_revision: u64,
     width: u32,
     height: u32,
 }
@@ -53,6 +59,8 @@ pub struct CanvasHost {
     rendered: Option<FrameKey>,
     view: Option<(u64, PageId, ViewTransform)>,
     placement: Option<Placement>,
+    /// Changes whenever the view is zoomed, panned or fitted by the user.
+    view_revision: u64,
 }
 
 /// Where the canvas element is in the window.
@@ -64,6 +72,10 @@ struct Placement {
     y: f32,
     /// Physical pixels per logical pixel.
     scale: f32,
+    /// Size of the canvas in physical pixels.
+    width: u32,
+    /// Size of the canvas in physical pixels.
+    height: u32,
 }
 
 impl CanvasHost {
@@ -77,12 +89,19 @@ impl CanvasHost {
             rendered: None,
             view: None,
             placement: None,
+            view_revision: 0,
         }
     }
 
     /// Record where the canvas element was painted, for [`Self::page_point`].
-    pub fn set_placement(&mut self, x: f32, y: f32, scale: f32) {
-        self.placement = Some(Placement { x, y, scale });
+    pub fn set_placement(&mut self, x: f32, y: f32, scale: f32, width: u32, height: u32) {
+        self.placement = Some(Placement {
+            x,
+            y,
+            scale,
+            width,
+            height,
+        });
     }
 
     /// The page point under a position in logical window pixels, once the
@@ -93,6 +112,80 @@ impl CanvasHost {
             f64::from((window_x - placement.x) * placement.scale),
             f64::from((window_y - placement.y) * placement.scale),
         ))
+    }
+
+    /// Current zoom, where 1.0 shows one document unit per logical pixel.
+    pub fn zoom(&self) -> Option<f64> {
+        let (placement, (_, _, view)) = (self.placement?, self.view?);
+        Some(view.scale / f64::from(placement.scale))
+    }
+
+    /// Multiply the zoom, keeping the page point under a position in logical
+    /// window pixels where it is. Without a position the canvas center stays.
+    pub fn zoom_by(&mut self, factor: f64, position: Option<(f32, f32)>) -> bool {
+        let Some(zoom) = self.zoom() else {
+            return false;
+        };
+        self.zoom_to(zoom * factor, position)
+    }
+
+    /// Set the zoom; see [`Self::zoom_by`] for the fixed point.
+    pub fn zoom_to(&mut self, zoom: f64, position: Option<(f32, f32)>) -> bool {
+        let (Some(placement), Some((epoch, page, mut view))) = (self.placement, self.view) else {
+            return false;
+        };
+        if !zoom.is_finite() {
+            return false;
+        }
+        let dpi = f64::from(placement.scale);
+        let (x, y) = match position {
+            Some((x, y)) => (
+                f64::from(x - placement.x) * dpi,
+                f64::from(y - placement.y) * dpi,
+            ),
+            None => (
+                f64::from(placement.width) / 2.0,
+                f64::from(placement.height) / 2.0,
+            ),
+        };
+        let before = view;
+        view.zoom_about(zoom.clamp(MIN_ZOOM, MAX_ZOOM) * dpi, x, y);
+        self.set_view(epoch, page, view, before)
+    }
+
+    /// Move the view by a distance in logical pixels.
+    pub fn pan(&mut self, dx: f32, dy: f32) -> bool {
+        let (Some(placement), Some((epoch, page, mut view))) = (self.placement, self.view) else {
+            return false;
+        };
+        let before = view;
+        view.offset_x += f64::from(dx * placement.scale);
+        view.offset_y += f64::from(dy * placement.scale);
+        self.set_view(epoch, page, view, before)
+    }
+
+    /// Fit the page content in the canvas again on the next frame.
+    pub fn fit(&mut self) {
+        self.view = None;
+        self.view_revision += 1;
+    }
+
+    fn set_view(
+        &mut self,
+        epoch: u64,
+        page: PageId,
+        view: ViewTransform,
+        before: ViewTransform,
+    ) -> bool {
+        let usable = [view.scale, view.offset_x, view.offset_y]
+            .iter()
+            .all(|value| value.is_finite());
+        if !usable || view == before {
+            return false;
+        }
+        self.view = Some((epoch, page, view));
+        self.view_revision += 1;
+        true
     }
 
     /// Name of the adapter used for rendering.
@@ -164,6 +257,7 @@ impl CanvasHost {
             page: page.id,
             generation,
             view_epoch,
+            view_revision: self.view_revision,
             width,
             height,
         };

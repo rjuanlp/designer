@@ -33,7 +33,14 @@ cargo run --locked -p designer
 
 The application opens the sample document. Ctrl+N creates an empty document;
 Frame, Rectangle and Ellipse draw shapes by clicking or dragging. Move selects
-and drags layers. Delete removes the selection. Inspector values remain read-only. A debug build
+and drags layers. Delete removes an unlocked selection. The inspector edits names,
+bounds, rectangle radius, opacity, fill, visibility, locking and frame clipping.
+Enter or focus loss commits one undoable transaction; Escape restores the value.
+Numbers accept a decimal comma or point, and fills accept `#RRGGBB` or
+`#RRGGBBAA`. Invalid values revert with a Spanish status message. Layer controls
+toggle visibility and locking, and raise/lower within the sibling paint order.
+In Preview, bounds, fill and opacity edit the selected state's overrides;
+reset controls restore inheritance from the base node. A debug build
 takes several seconds to show its first frame while the GPU device and Vello
 shaders are prepared; the window is empty until then.
 
@@ -81,8 +88,11 @@ zoom math; interactive zoom/pan controls are not yet wired into the shell.
 `text_field::EditState` provides window-independent single-line editing with
 UTF-16 platform ranges and composition replacement. Tests cover Spanish dead-key
 composition, supplementary Unicode characters, selection, deletion and reversible
-commits. It is not yet connected to a GPUI input handler or the inspector;
-these unit tests do not establish working IME input in the application.
+commits. A reusable GPUI field now registers an `EntityInputHandler`, paints
+selection and caret, and supports keyboard navigation and clipboard operations.
+AccessKit text controls expose SetValue using the same commit path as Enter.
+Manual IME, screen-reader, theme and responsive-layout validation remains for
+the graphical reviewer; automated verification does not launch a window.
 
 ## Troubleshooting
 

@@ -292,6 +292,7 @@ impl Shell {
             }))
             .child(command(
                 "sequence-add",
+                Icon::SequenceAdd,
                 strings::ADD_SEQUENCE,
                 can_add_sequence,
                 palette,
@@ -299,6 +300,7 @@ impl Shell {
             ))
             .child(command(
                 "sequence-remove",
+                Icon::SequenceRemove,
                 strings::REMOVE_SEQUENCE,
                 active_sequence.is_some(),
                 palette,
@@ -307,6 +309,11 @@ impl Shell {
         let transport = row()
             .child(command(
                 "animation-play",
+                if self.animation.is_playing() {
+                    Icon::Pause
+                } else {
+                    Icon::Play
+                },
                 if self.animation.is_playing() {
                     strings::PAUSE
                 } else {
@@ -319,8 +326,9 @@ impl Shell {
                 }),
             ))
             .child(
-                button(
+                icon_button(
                     "animation-base",
+                    Icon::Pencil,
                     strings::BASE_VALUES,
                     palette,
                     !self.animation.preview,
@@ -332,16 +340,28 @@ impl Shell {
                 })),
             )
             .child(
-                button("time-back", strings::TIME_BACK, palette, false).on_click(cx.listener(
-                    move |this, _, _, cx| this.seek_animation(global_time.saturating_sub(100), cx),
-                )),
+                icon_button(
+                    "time-back",
+                    Icon::ChevronLeft,
+                    strings::TIME_BACK,
+                    palette,
+                    false,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.seek_animation(global_time.saturating_sub(100), cx)
+                })),
             )
             .child(
-                button("time-forward", strings::TIME_FORWARD, palette, false).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        this.seek_animation(global_time.saturating_add(100), cx)
-                    }),
-                ),
+                icon_button(
+                    "time-forward",
+                    Icon::ChevronRight,
+                    strings::TIME_FORWARD,
+                    palette,
+                    false,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.seek_animation(global_time.saturating_add(100), cx)
+                })),
             )
             .child(muted(strings::animation_time(time, duration), palette));
         let ruler = row().children((0..=4_u32).map(|index| {
@@ -367,6 +387,7 @@ impl Shell {
             .child(muted(strings::DURATION, palette))
             .child(command(
                 "duration-less",
+                Icon::Minus,
                 strings::DURATION_LESS,
                 duration_less < duration,
                 palette,
@@ -388,6 +409,7 @@ impl Shell {
             ))
             .child(command(
                 "duration-more",
+                Icon::Plus,
                 strings::DURATION_MORE,
                 duration_more > duration,
                 palette,
@@ -434,6 +456,7 @@ impl Shell {
         let editor = row()
             .child(command(
                 "key-write",
+                Icon::Key,
                 if key.is_some() {
                     strings::REPLACE_KEY
                 } else {
@@ -445,6 +468,7 @@ impl Shell {
             ))
             .child(command(
                 "key-less",
+                Icon::Minus,
                 strings::VALUE_LESS,
                 editable,
                 palette,
@@ -458,6 +482,7 @@ impl Shell {
             ))
             .child(command(
                 "key-more",
+                Icon::Plus,
                 strings::VALUE_MORE,
                 editable,
                 palette,
@@ -469,7 +494,7 @@ impl Shell {
                     )
                 }),
             ))
-            .child(command(
+            .child(text_command(
                 "key-easing",
                 strings::easing_label(easing),
                 editable,
@@ -479,6 +504,7 @@ impl Shell {
             .child(curve_preview(easing, palette))
             .child(command(
                 "key-remove",
+                Icon::KeyOff,
                 strings::REMOVE_KEY,
                 editable && key.is_some(),
                 palette,

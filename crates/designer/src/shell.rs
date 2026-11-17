@@ -1,5 +1,6 @@
 //! The application shell: navigation, the design workspace and its panels.
 
+mod inspector_view;
 mod timeline_view;
 
 use std::{
@@ -27,14 +28,15 @@ use designer_gpu_bridge::SharedFrame;
 use designer_render::document::hit_test;
 use gpui::{
     AnyElement, App, Bounds, Context, Div, ElementId, ExternalFencePoint, ExternalTexture,
-    FocusHandle, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions,
-    Pixels, Point, PromptLevel, SharedString, Stateful, Window, actions, canvas, div, prelude::*,
-    px, rgb, transparent_black,
+    FocusHandle, KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PathPromptOptions, Pixels, Point, PromptLevel, ScrollWheelEvent, SharedString,
+    Stateful, Window, actions, canvas, div, prelude::*, px, rgb, svg, transparent_black,
 };
 
 use crate::{
     LaunchOptions,
     canvas::CanvasHost,
+    icons::Icon,
     prototype_preview::PrototypePreview,
     strings::{self, NarrowPanel, Screen, Tool},
     theme::{self, LayoutMode, Palette, layout_mode, metrics},
@@ -65,6 +67,14 @@ actions!(
         NewDocument,
         /// Delete the selected layer.
         DeleteSelection,
+        /// Zoom the canvas in.
+        ZoomIn,
+        /// Zoom the canvas out.
+        ZoomOut,
+        /// Fit the page content in the canvas.
+        ZoomFit,
+        /// Show the canvas at 100%.
+        ZoomReset,
         /// Cancel the current drag, or clear the selection.
         Cancel
     ]
@@ -79,6 +89,12 @@ const SHAPE_FILL: Color = Color::rgb(196, 196, 196);
 const FRAME_FILL: Color = Color::rgb(255, 255, 255);
 /// Size of a shape created by a click without a drag, in document units.
 const CLICK_SIZE: f64 = 100.0;
+/// Zoom factor of one zoom-in step.
+const ZOOM_STEP: f64 = 1.25;
+/// Logical pixels one wheel line scrolls.
+const WHEEL_LINE: f32 = 40.0;
+/// Natural-log zoom change per wheel pixel: one 120-pixel notch is about 20%.
+const WHEEL_ZOOM_RATE: f64 = 0.0015;
 
 /// A pointer drag on the canvas, in page coordinates.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -195,11 +211,19 @@ fn with_extension(path: PathBuf) -> PathBuf {
 
 /// Root view of the application.
 pub struct Shell {
+    fields: Vec<(
+        crate::inspector::Field,
+        gpui::Entity<crate::text_field::view::FieldView>,
+    )>,
+    field_target: Option<(PageId, NodeId, Option<PrototypeStateId>)>,
     session: Session,
     /// The uncommitted result of the drag in progress, shown instead of the
     /// session document.
     preview: Option<Document>,
     drag: Option<Drag>,
+    /// Last pointer position of the pan drag in progress, in window pixels.
+    pan: Option<(f32, f32)>,
+    space_held: bool,
     prompt_pending: bool,
     a11y_focus: A11yNodeId,
     a11y_cache: Option<TreeUpdate>,
@@ -286,8 +310,12 @@ impl Shell {
         .detach();
         Self {
             session,
+            fields: Vec::new(),
+            field_target: None,
             preview: None,
             drag: None,
+            pan: None,
+            space_held: false,
             prompt_pending: false,
             a11y_focus: A11yNodeId(0),
             a11y_cache: None,
@@ -358,6 +386,8 @@ impl Shell {
     }
 
     fn replace_session(&mut self, session: Session, cx: &mut Context<Self>) {
+        self.fields.clear();
+        self.field_target = None;
         self.animation = crate::timeline::Timeline::default();
         self.page = session
             .document()
@@ -442,6 +472,9 @@ impl Shell {
             return;
         }
         self.a11y_focus = request.target_node;
+        if self.inspector_accessibility(&request, window, cx) {
+            return;
+        }
         if request.action == A11yAction::Focus {
             cx.notify();
             return;
@@ -518,6 +551,14 @@ impl Shell {
             self.undo(&Undo, window, cx);
         } else if target == A11Y_REDO {
             self.redo(&Redo, window, cx);
+        } else if target == A11Y_ZOOM_OUT {
+            self.zoom_out(&ZoomOut, window, cx);
+        } else if target == A11Y_ZOOM_RESET {
+            self.zoom_reset(&ZoomReset, window, cx);
+        } else if target == A11Y_ZOOM_IN {
+            self.zoom_in(&ZoomIn, window, cx);
+        } else if target == A11Y_ZOOM_FIT {
+            self.zoom_fit(&ZoomFit, window, cx);
         } else if target == A11Y_DELETE {
             self.delete_selection(&DeleteSelection, window, cx);
         } else if let Some(id) = target
@@ -556,6 +597,7 @@ impl Shell {
                     |r| strings::import_summary(r.imported_nodes, import_warning_count(r)),
                 ),
             focus: self.a11y_focus,
+            zoom: self.canvas.borrow().zoom(),
             screen: self.screen,
             tool: self.tool,
             selection: self.selection,
@@ -620,6 +662,12 @@ impl Shell {
             return;
         };
         let page = self.page;
+        if !self
+            .current_page()
+            .is_some_and(|p| crate::inspector::editable(&p.nodes, node))
+        {
+            return;
+        }
         self.status = self
             .session
             .apply(&[Operation::DeleteNode { page, node }])
@@ -859,6 +907,92 @@ impl Shell {
         self.guarded(Pending::Open, window, cx);
     }
 
+    fn zoom_canvas(&mut self, factor: f64, cx: &mut Context<Self>) {
+        if self.canvas.borrow_mut().zoom_by(factor, None) {
+            cx.notify();
+        }
+    }
+
+    fn zoom_in(&mut self, _: &ZoomIn, _: &mut Window, cx: &mut Context<Self>) {
+        self.zoom_canvas(ZOOM_STEP, cx);
+    }
+
+    fn zoom_out(&mut self, _: &ZoomOut, _: &mut Window, cx: &mut Context<Self>) {
+        self.zoom_canvas(1.0 / ZOOM_STEP, cx);
+    }
+
+    fn zoom_fit(&mut self, _: &ZoomFit, window: &mut Window, cx: &mut Context<Self>) {
+        self.canvas.borrow_mut().fit();
+        cx.notify();
+        // The new zoom is known only after the next frame is painted.
+        cx.on_next_frame(window, |_, _, cx| cx.notify());
+    }
+
+    fn zoom_reset(&mut self, _: &ZoomReset, _: &mut Window, cx: &mut Context<Self>) {
+        if self.canvas.borrow_mut().zoom_to(1.0, None) {
+            cx.notify();
+        }
+    }
+
+    /// Ctrl+wheel zooms about the pointer; the wheel alone pans, sideways
+    /// with Shift.
+    fn canvas_scroll(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let delta = event.delta.pixel_delta(px(WHEEL_LINE));
+        let (mut dx, mut dy) = (f32::from(delta.x), f32::from(delta.y));
+        let position = (f32::from(event.position.x), f32::from(event.position.y));
+        let changed = if event.modifiers.control {
+            let factor = (f64::from(dy) * WHEEL_ZOOM_RATE).exp();
+            self.canvas.borrow_mut().zoom_by(factor, Some(position))
+        } else {
+            if event.modifiers.shift && dx == 0.0 {
+                (dx, dy) = (dy, 0.0);
+            }
+            self.canvas.borrow_mut().pan(dx, dy)
+        };
+        if changed {
+            cx.stop_propagation();
+            cx.notify();
+        }
+    }
+
+    fn pan_start(&mut self, event: &MouseDownEvent, window: &mut Window, _: &mut Context<Self>) {
+        window.focus(&self.focus);
+        self.pan = Some((f32::from(event.position.x), f32::from(event.position.y)));
+    }
+
+    fn pan_end(&mut self, _: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
+        self.pan = None;
+    }
+
+    /// Continue a pan drag. Returns whether the event belonged to one.
+    fn pan_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) -> bool {
+        let Some(last) = self.pan else {
+            return false;
+        };
+        if event.pressed_button.is_none() {
+            // The button was released outside the window.
+            self.pan = None;
+            return false;
+        }
+        let now = (f32::from(event.position.x), f32::from(event.position.y));
+        self.pan = Some(now);
+        if self.canvas.borrow_mut().pan(now.0 - last.0, now.1 - last.1) {
+            cx.notify();
+        }
+        true
+    }
+
+    /// Space held down turns a left drag on the canvas into a pan.
+    fn track_space(&mut self, event: &KeyDownEvent, _: &mut Window, _: &mut Context<Self>) {
+        self.space_held = event.keystroke.key == "space" && !event.keystroke.modifiers.modified();
+    }
+
+    fn release_space(&mut self, event: &KeyUpEvent, _: &mut Window, _: &mut Context<Self>) {
+        if event.keystroke.key == "space" {
+            self.space_held = false;
+        }
+    }
+
     fn pointer(&self, position: Point<Pixels>) -> Option<(f64, f64)> {
         self.canvas
             .borrow()
@@ -866,6 +1000,13 @@ impl Shell {
     }
 
     fn pointer_operations(&self, point: (f64, f64), finished: bool) -> Option<Vec<Operation>> {
+        if let Some(Drag::Move { node, .. }) = self.drag
+            && !self
+                .current_page()
+                .is_some_and(|p| crate::inspector::editable(&p.nodes, node))
+        {
+            return None;
+        }
         drag_operations(
             self.drag?,
             point,
@@ -1050,6 +1191,10 @@ impl Shell {
     ) {
         // Keyboard shortcuts act on the canvas after a click on it.
         window.focus(&self.focus);
+        if self.space_held {
+            self.pan = Some((f32::from(event.position.x), f32::from(event.position.y)));
+            return;
+        }
         if self.screen == Screen::Preview {
             self.prototype_preview
                 .pointer_down(self.preview_hit(event.position));
@@ -1095,6 +1240,9 @@ impl Shell {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.pan_move(event, cx) {
+            return;
+        }
         if self.screen == Screen::Preview {
             let page = self.session.document().page(self.page).cloned();
             if let Some(page) = page
@@ -1123,6 +1271,9 @@ impl Shell {
     }
 
     fn canvas_mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.pan.take().is_some() {
+            return;
+        }
         if self.screen == Screen::Preview {
             let page = self.session.document().page(self.page).cloned();
             if let Some(page) = page
@@ -1281,10 +1432,106 @@ fn button(
     control(id, palette, active).child(label.into())
 }
 
-/// A tool bar command. When unavailable it is dimmed, cannot be focused and
-/// does nothing.
+/// Name of a control, shown while the pointer rests on it.
+struct Tooltip {
+    text: SharedString,
+    palette: Palette,
+}
+
+impl Render for Tooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(metrics::SPACE_S))
+            .py(px(metrics::SPACE_XS))
+            .rounded(px(metrics::RADIUS))
+            .border_1()
+            .border_color(rgb(self.palette.border))
+            .bg(rgb(self.palette.panel))
+            .text_color(rgb(self.palette.text))
+            .text_size(px(metrics::TEXT_S))
+            .child(self.text.clone())
+    }
+}
+
+/// Builds the tooltip that names a control.
+fn tooltip(
+    label: impl Into<SharedString>,
+    palette: &Palette,
+) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static {
+    let (text, palette) = (label.into(), *palette);
+    move |_, cx| {
+        cx.new(|_| Tooltip {
+            text: text.clone(),
+            palette,
+        })
+        .into()
+    }
+}
+
+/// An icon tinted with an interface color.
+fn icon_image(icon: Icon, color: u32) -> gpui::Svg {
+    svg()
+        .path(icon.path())
+        .flex_none()
+        .size(px(metrics::ICON))
+        .text_color(rgb(color))
+}
+
+/// A square button that shows an icon; its name appears as a tooltip.
+fn icon_button(
+    id: impl Into<ElementId>,
+    icon: Icon,
+    label: impl Into<SharedString>,
+    palette: &Palette,
+    active: bool,
+) -> Stateful<Div> {
+    let color = if active {
+        palette.selected_text
+    } else {
+        palette.text
+    };
+    control(id, palette, active)
+        .justify_center()
+        .w(px(metrics::ROW_HEIGHT))
+        .px(px(0.0))
+        .child(icon_image(icon, color))
+        .tooltip(tooltip(label, palette))
+}
+
+/// An icon command. When unavailable it is dimmed, cannot be focused and
+/// does nothing, but still tells its name.
 fn command(
-    id: &'static str,
+    id: impl Into<ElementId>,
+    icon: Icon,
+    label: &'static str,
+    available: bool,
+    palette: &Palette,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    if available {
+        icon_button(id, icon, label, palette, false)
+            .on_click(on_click)
+            .into_any_element()
+    } else {
+        div()
+            .id(id)
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .size(px(metrics::ROW_HEIGHT))
+            .border_1()
+            .border_color(transparent_black())
+            .opacity(0.4)
+            .child(icon_image(icon, palette.text_muted))
+            .tooltip(tooltip(label, palette))
+            .into_any_element()
+    }
+}
+
+/// A command whose label is its current value, such as an easing preset.
+fn text_command(
+    id: impl Into<ElementId>,
     label: &'static str,
     available: bool,
     palette: &Palette,
@@ -1325,18 +1572,20 @@ fn muted(text: impl Into<SharedString>, palette: &Palette) -> Div {
     div().text_color(rgb(palette.text_muted)).child(text.into())
 }
 
-fn import_warning_count(report: &import::ImportReport) -> usize {
-    report.warnings.len() + report.omitted_warnings
+/// Icon of a canvas tool.
+fn tool_icon(tool: Tool) -> Icon {
+    match tool {
+        Tool::Move => Icon::Move,
+        Tool::Frame => Icon::Frame,
+        Tool::Rectangle => Icon::Rectangle,
+        Tool::Ellipse => Icon::Ellipse,
+        Tool::Text => Icon::Text,
+        Tool::Pen => Icon::Pen,
+    }
 }
 
-/// Format a document number without a trailing `.0`.
-pub fn format_number(value: f64) -> String {
-    let rounded = (value * 100.0).round() / 100.0;
-    if rounded.fract() == 0.0 {
-        format!("{rounded:.0}")
-    } else {
-        format!("{rounded}")
-    }
+fn import_warning_count(report: &import::ImportReport) -> usize {
+    report.warnings.len() + report.omitted_warnings
 }
 
 fn flatten<'a>(nodes: &'a [Node], depth: usize, rows: &mut Vec<(usize, &'a Node)>) {
@@ -1405,11 +1654,16 @@ impl Shell {
             .border_b_1()
             .border_color(rgb(palette.border))
             .children(Tool::ALL.into_iter().enumerate().map(|(index, tool)| {
-                button(("tool", index), tool.label(), palette, self.tool == tool).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        this.select_tool(tool, cx);
-                    }),
+                icon_button(
+                    ("tool", index),
+                    tool_icon(tool),
+                    tool.label(),
+                    palette,
+                    self.tool == tool,
                 )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.select_tool(tool, cx);
+                }))
             }))
             .child(
                 div()
@@ -1421,6 +1675,7 @@ impl Shell {
             )
             .child(command(
                 "undo",
+                Icon::Undo,
                 strings::UNDO,
                 self.session.can_undo(),
                 palette,
@@ -1428,6 +1683,7 @@ impl Shell {
             ))
             .child(command(
                 "redo",
+                Icon::Redo,
                 strings::REDO,
                 self.session.can_redo(),
                 palette,
@@ -1435,10 +1691,57 @@ impl Shell {
             ))
             .child(command(
                 "save",
+                Icon::Save,
                 strings::SAVE,
                 self.session.is_dirty() || self.session.path().is_none(),
                 palette,
                 cx.listener(|this, _, window, cx| this.save(&Save, window, cx)),
+            ))
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(1.0))
+                    .h(px(metrics::ROW_HEIGHT))
+                    .mx(px(metrics::SPACE_XS))
+                    .bg(rgb(palette.border)),
+            )
+            .child(command(
+                "zoom-out",
+                Icon::ZoomOut,
+                strings::ZOOM_OUT,
+                true,
+                palette,
+                cx.listener(|this, _, window, cx| this.zoom_out(&ZoomOut, window, cx)),
+            ))
+            .child(
+                button(
+                    "zoom-reset",
+                    strings::zoom_percent(self.canvas.borrow().zoom()),
+                    palette,
+                    false,
+                )
+                .justify_center()
+                .min_w(px(metrics::ZOOM_LABEL_WIDTH))
+                .tooltip(tooltip(strings::ZOOM_RESET, palette))
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.zoom_reset(&ZoomReset, window, cx)),
+                ),
+            )
+            .child(command(
+                "zoom-in",
+                Icon::ZoomIn,
+                strings::ZOOM_IN,
+                true,
+                palette,
+                cx.listener(|this, _, window, cx| this.zoom_in(&ZoomIn, window, cx)),
+            ))
+            .child(command(
+                "zoom-fit",
+                Icon::ZoomFit,
+                strings::ZOOM_FIT,
+                true,
+                palette,
+                cx.listener(|this, _, window, cx| this.zoom_fit(&ZoomFit, window, cx)),
             ))
             .when(mode == LayoutMode::Wide, |this| {
                 this.child(
@@ -1514,7 +1817,15 @@ impl Shell {
             .bg(rgb(palette.panel))
             .child(section_title(strings::PAGES, palette))
             .children(pages)
-            .child(section_title(strings::LAYERS, palette))
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_between()
+                    .child(section_title(strings::LAYERS, palette))
+                    .child(self.layer_order_controls(palette, cx)),
+            )
             .child(
                 div()
                     .id("layers-scroll")
@@ -1534,16 +1845,9 @@ impl Shell {
     ) -> AnyElement {
         let id = node.id;
         let selected = self.shown_selection() == Some(id);
-        let state = |label: &'static str| {
-            div()
-                .flex_none()
-                .text_size(px(metrics::TEXT_S))
-                .when(!selected, |this| this.text_color(rgb(palette.text_muted)))
-                .child(label)
-        };
         control(("layer", id.0), palette, selected)
             .mx(px(metrics::SPACE_XS))
-            .gap(px(metrics::SPACE_S))
+            .gap(px(metrics::SPACE_XS))
             .pl(px(metrics::SPACE_S + metrics::INDENT * depth as f32))
             .when(!node.visible && !selected, |this| {
                 this.text_color(rgb(palette.text_muted))
@@ -1553,129 +1857,18 @@ impl Shell {
                 // instead of pushing the state labels out of the panel.
                 div().flex_1().min_w_0().truncate().child(node.name.clone()),
             )
-            .when(!node.visible, |this| this.child(state(strings::HIDDEN)))
-            .when(node.locked, |this| this.child(state(strings::LOCKED)))
+            .child(self.layer_toggle(
+                node,
+                crate::inspector::Field::Visible,
+                selected,
+                palette,
+                cx,
+            ))
+            .child(self.layer_toggle(node, crate::inspector::Field::Locked, selected, palette, cx))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.select_layer(id, cx);
             }))
             .into_any_element()
-    }
-
-    fn inspector(&self, palette: &Palette) -> Div {
-        let panel = div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .bg(rgb(palette.panel))
-            .child(section_title(strings::PROPERTIES, palette));
-        let node = self
-            .shown_selection()
-            .and_then(|id| self.current_page().and_then(|page| page.node(id)));
-        let Some(node) = node else {
-            return panel.child(
-                muted(strings::NOTHING_SELECTED, palette)
-                    .px(px(metrics::SPACE_M))
-                    .py(px(metrics::SPACE_S)),
-            );
-        };
-
-        let row = |label: &'static str, value: AnyElement| {
-            div()
-                .flex()
-                .items_start()
-                .gap(px(metrics::SPACE_S))
-                .px(px(metrics::SPACE_M))
-                .py(px(metrics::SPACE_XS))
-                .child(
-                    div()
-                        .flex_none()
-                        .w(px(metrics::LABEL_WIDTH))
-                        .text_color(rgb(palette.text_muted))
-                        .child(label),
-                )
-                .child(div().flex_1().min_w_0().child(value))
-        };
-        let text = |value: String| div().child(value).into_any_element();
-        let yes_no = |value: bool| if value { strings::YES } else { strings::NO };
-
-        let fill = match node.fill {
-            Some(color) => div()
-                .flex()
-                .items_center()
-                .gap(px(metrics::SPACE_S))
-                .child(
-                    div()
-                        .flex_none()
-                        .size(px(metrics::SWATCH))
-                        .rounded(px(metrics::SPACE_XS))
-                        .border_1()
-                        .border_color(rgb(palette.border))
-                        .bg(rgb((u32::from(color.r) << 16)
-                            | (u32::from(color.g) << 8)
-                            | u32::from(color.b))),
-                )
-                .child(color.hex())
-                .into_any_element(),
-            None => muted(strings::NO_FILL, palette).into_any_element(),
-        };
-
-        let bounds = node.bounds;
-        panel.child(
-            div()
-                .id("inspector-scroll")
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .child(row(strings::NAME, text(node.name.clone())))
-                .child(row(
-                    strings::KIND,
-                    text(strings::kind_label(&node.kind).to_owned()),
-                ))
-                .child(row(strings::POSITION_X, text(format_number(bounds.x))))
-                .child(row(strings::POSITION_Y, text(format_number(bounds.y))))
-                .child(row(strings::WIDTH, text(format_number(bounds.width))))
-                .child(row(strings::HEIGHT, text(format_number(bounds.height))))
-                .when_some(
-                    match node.kind {
-                        NodeKind::Rectangle { corner_radius } => Some(corner_radius),
-                        _ => None,
-                    },
-                    |this, radius| this.child(row(strings::RADIUS, text(format_number(radius)))),
-                )
-                .child(row(strings::FILL, fill))
-                .child(row(
-                    strings::OPACITY,
-                    text(format!("{} %", format_number(node.opacity * 100.0))),
-                ))
-                .when_some(node.fill, |this, color| {
-                    this.child(row(
-                        strings::FILL_OPACITY,
-                        text(format!("{} %", color.opacity_percent())),
-                    ))
-                })
-                .child(row(strings::VISIBLE, text(yes_no(node.visible).to_owned())))
-                .child(row(strings::LOCKED, text(yes_no(node.locked).to_owned())))
-                .when_some(
-                    match &node.kind {
-                        NodeKind::Text { content } => Some(content.clone()),
-                        _ => None,
-                    },
-                    |this, content| {
-                        this.child(row(strings::CONTENT, text(content))).child(
-                            muted(strings::TEXT_NOT_RENDERED, palette)
-                                .px(px(metrics::SPACE_M))
-                                .py(px(metrics::SPACE_XS))
-                                .text_size(px(metrics::TEXT_S)),
-                        )
-                    },
-                )
-                .child(
-                    muted(strings::READ_ONLY_NOTE, palette)
-                        .px(px(metrics::SPACE_M))
-                        .py(px(metrics::SPACE_M))
-                        .text_size(px(metrics::TEXT_S)),
-                ),
-        )
     }
 
     fn canvas_panel(&self, palette: &Palette, cx: &mut Context<Self>) -> Div {
@@ -1686,7 +1879,11 @@ impl Shell {
             .on_mouse_down(MouseButton::Left, cx.listener(Self::canvas_mouse_down))
             .on_mouse_move(cx.listener(Self::canvas_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::canvas_mouse_up))
-            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::canvas_mouse_up));
+            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::canvas_mouse_up))
+            .on_mouse_down(MouseButton::Middle, cx.listener(Self::pan_start))
+            .on_mouse_up(MouseButton::Middle, cx.listener(Self::pan_end))
+            .on_mouse_up_out(MouseButton::Middle, cx.listener(Self::pan_end))
+            .on_scroll_wheel(cx.listener(Self::canvas_scroll));
         let centered = |children: Vec<AnyElement>| {
             div()
                 .absolute()
@@ -1733,10 +1930,13 @@ impl Shell {
                     return;
                 }
                 let mut host = host.borrow_mut();
+                let zoom_before = host.zoom();
                 host.set_placement(
                     f32::from(bounds.origin.x),
                     f32::from(bounds.origin.y),
                     scale,
+                    width,
+                    height,
                 );
                 match host.frame(&page, selection, generation, view_epoch, width, height) {
                     Ok(result) => {
@@ -1752,6 +1952,11 @@ impl Shell {
                         // Render again so the panel shows the stored error.
                         window.refresh();
                     }
+                }
+                // The tool bar shows the zoom, which a first or refitted
+                // frame has just decided.
+                if host.zoom() != zoom_before {
+                    window.refresh();
                 }
             },
         )
@@ -1800,11 +2005,16 @@ impl Shell {
                     .px(px(metrics::SPACE_S))
                     .child(div().px(px(metrics::SPACE_XS)).child(strings::TIMELINE))
                     .child(
-                        button("timeline-toggle", label, palette, false).on_click(cx.listener(
-                            |this, _, window, cx| {
-                                this.toggle_timeline(&ToggleTimeline, window, cx);
-                            },
-                        )),
+                        icon_button(
+                            "timeline-toggle",
+                            Icon::Timeline,
+                            label,
+                            palette,
+                            self.timeline_open,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_timeline(&ToggleTimeline, window, cx);
+                        })),
                     ),
             )
             .when(self.timeline_open, |this| {
@@ -1841,7 +2051,7 @@ impl Shell {
                         .h_full()
                         .border_l_1()
                         .border_color(rgb(palette.border))
-                        .child(self.inspector(palette)),
+                        .child(self.inspector(palette, cx)),
                 ),
             LayoutMode::Narrow => {
                 let switcher =
@@ -1872,7 +2082,7 @@ impl Shell {
                 let panel = match self.narrow_panel {
                     NarrowPanel::Layers => self.layers_panel(palette, cx),
                     NarrowPanel::Canvas => self.canvas_panel(palette, cx),
-                    NarrowPanel::Inspector => self.inspector(palette),
+                    NarrowPanel::Inspector => self.inspector(palette, cx),
                 };
                 div()
                     .flex()
@@ -1927,29 +2137,52 @@ impl Shell {
                     .flex_wrap()
                     .gap(px(metrics::SPACE_S))
                     .child(
-                        button("new-document", strings::NEW_DOCUMENT, palette, true).on_click(
+                        icon_button(
+                            "new-document",
+                            Icon::FilePlus,
+                            strings::NEW_DOCUMENT,
+                            palette,
+                            false,
+                        )
+                        .on_click(
                             cx.listener(|this, _, window, cx| {
                                 this.guarded(Pending::New, window, cx)
                             }),
                         ),
                     )
                     .child(
-                        button("open-document", strings::OPEN_DOCUMENT, palette, false).on_click(
-                            cx.listener(|this, _, window, cx| {
-                                this.guarded(Pending::Open, window, cx)
-                            }),
-                        ),
+                        icon_button(
+                            "open-document",
+                            Icon::FolderOpen,
+                            strings::OPEN_DOCUMENT,
+                            palette,
+                            false,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.guarded(Pending::Open, window, cx)
+                        })),
                     )
                     .child(
-                        button("save-document-as", strings::SAVE_AS, palette, false)
-                            .on_click(cx.listener(|this, _, _, cx| this.save_as(cx))),
+                        icon_button(
+                            "save-document-as",
+                            Icon::SaveAs,
+                            strings::SAVE_AS,
+                            palette,
+                            false,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.save_as(cx))),
                     )
                     .child(
-                        button("open-sample", strings::OPEN_SAMPLE, palette, false).on_click(
-                            cx.listener(|this, _, window, cx| {
-                                this.guarded(Pending::Sample, window, cx)
-                            }),
-                        ),
+                        icon_button(
+                            "open-sample",
+                            Icon::Shapes,
+                            strings::OPEN_SAMPLE,
+                            palette,
+                            false,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.guarded(Pending::Sample, window, cx)
+                        })),
                     ),
             )
             .child(muted(strings::NO_RECENT_DOCUMENTS, palette))
@@ -1994,8 +2227,9 @@ impl Shell {
                     .items_center()
                     .gap(px(metrics::SPACE_S))
                     .child(
-                        button(
+                        icon_button(
                             "import-pick-file",
+                            Icon::Import,
                             strings::IMPORT_PICK_FILE,
                             palette,
                             false,
@@ -2004,6 +2238,7 @@ impl Shell {
                     )
                     .child(command(
                         "import-apply",
+                        Icon::Check,
                         strings::IMPORT_APPLY,
                         can_apply,
                         palette,
@@ -2109,6 +2344,7 @@ impl Shell {
         };
         let make_hover = command(
             "prototype-create-hover",
+            Icon::PointerHover,
             strings::CREATE_HOVER_STATE,
             self.selection.is_some() && page.prototype.states.len() < MAX_PROTOTYPE_STATES,
             palette,
@@ -2118,6 +2354,7 @@ impl Shell {
         );
         let make_click = command(
             "prototype-create-click",
+            Icon::PointerClick,
             strings::CREATE_CLICK_STATE,
             self.selection.is_some() && page.prototype.states.len() < MAX_PROTOTYPE_STATES,
             palette,
@@ -2127,6 +2364,7 @@ impl Shell {
         );
         let remove_state = command(
             "prototype-remove-state",
+            Icon::Trash,
             strings::REMOVE_PROTOTYPE_STATE,
             self.prototype_preview.state() != INITIAL_STATE,
             palette,
@@ -2166,7 +2404,8 @@ impl Shell {
             .child(make_hover)
             .child(make_click)
             .child(div().child(strings::PROTOTYPE_LAYERS))
-            .child(node_rows);
+            .child(node_rows)
+            .child(self.inspector(palette, cx));
         let canvas = div()
             .relative()
             .flex_1()
@@ -2224,10 +2463,18 @@ impl Shell {
                             .into_iter()
                             .enumerate()
                             .map(|(index, (label, dark))| {
-                                button(("theme", index), label, palette, self.dark == dark)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                icon_button(
+                                    ("theme", index),
+                                    if dark { Icon::Moon } else { Icon::Sun },
+                                    label,
+                                    palette,
+                                    self.dark == dark,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
                                         this.set_theme(dark, cx);
-                                    }))
+                                    },
+                                ))
                             }),
                     ),
             )
@@ -2299,6 +2546,7 @@ impl Render for Shell {
         }
         let palette = self.palette();
         let mode = layout_mode(f32::from(window.viewport_size().width));
+        self.sync_fields(window, cx);
         let content = match self.screen {
             Screen::Documents => self.documents(&palette, cx),
             Screen::Design => self.workspace(mode, &palette, cx),
@@ -2322,6 +2570,12 @@ impl Render for Shell {
             .on_action(cx.listener(Self::new_document))
             .on_action(cx.listener(Self::delete_selection))
             .on_action(cx.listener(Self::cancel))
+            .on_action(cx.listener(Self::zoom_in))
+            .on_action(cx.listener(Self::zoom_out))
+            .on_action(cx.listener(Self::zoom_fit))
+            .on_action(cx.listener(Self::zoom_reset))
+            .on_key_down(cx.listener(Self::track_space))
+            .on_key_up(cx.listener(Self::release_space))
             .size_full()
             .flex()
             .flex_col()
@@ -2336,14 +2590,6 @@ impl Render for Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn numbers_drop_a_useless_fraction_and_keep_two_decimals() {
-        assert_eq!(format_number(120.0), "120");
-        assert_eq!(format_number(-0.5), "-0.5");
-        assert_eq!(format_number(1.0 / 3.0), "0.33");
-        assert_eq!(format_number(2.999), "3");
-    }
 
     #[test]
     fn layer_rows_list_the_topmost_layer_first_with_depth() {

@@ -40,6 +40,15 @@ pub(crate) const A11Y_REDO: u64 = 3002;
 /// Stable delete identity.
 pub(crate) const A11Y_DELETE: u64 = 3003;
 
+/// Stable zoom control identities.
+pub(crate) const A11Y_ZOOM_OUT: u64 = 3004;
+/// Shows the zoom and resets it to 100%.
+pub(crate) const A11Y_ZOOM_RESET: u64 = 3005;
+/// Zooms in.
+pub(crate) const A11Y_ZOOM_IN: u64 = 3006;
+/// Fits the content.
+pub(crate) const A11Y_ZOOM_FIT: u64 = 3007;
+
 /// Stable new identity.
 pub(crate) const A11Y_NEW: u64 = 3010;
 
@@ -87,6 +96,10 @@ pub(crate) const A11Y_PROPERTY_BASE: u64 = 4000;
 
 /// Stable property extra identity.
 pub(crate) const A11Y_PROPERTY_EXTRA: u64 = 4020;
+pub(crate) const A11Y_EDIT_BASE: u64 = 5000;
+pub(crate) const A11Y_RESET_BASE: u64 = 5100;
+pub(crate) const A11Y_NO_FILL: u64 = 5200;
+pub(crate) const A11Y_LAYER_CONTROL_BASE: u64 = 1 << 48;
 
 /// Prototype identity range.
 pub(crate) const A11Y_STATE_BASE: u64 = 1u64 << 63;
@@ -114,6 +127,8 @@ pub(crate) struct A11ySnapshot<'a> {
     pub(crate) prototype_state: designer_core::PrototypeStateId,
     pub(crate) can_import: bool,
     pub(crate) import_summary: String,
+    /// Canvas zoom, where 1.0 is 100%.
+    pub(crate) zoom: Option<f64>,
 }
 
 pub(crate) fn build_accessibility_tree(snapshot: A11ySnapshot<'_>) -> TreeUpdate {
@@ -138,6 +153,7 @@ pub(crate) fn build_accessibility_tree(snapshot: A11ySnapshot<'_>) -> TreeUpdate
         prototype_state,
         can_import,
         import_summary,
+        zoom,
     } = snapshot;
     let mut nodes = Vec::new();
     let root_children = vec![A11yNodeId(A11Y_NAV_GROUP), A11yNodeId(A11Y_CONTENT_GROUP)];
@@ -195,6 +211,22 @@ pub(crate) fn build_accessibility_tree(snapshot: A11ySnapshot<'_>) -> TreeUpdate
             } else {
                 node.set_disabled();
             }
+            toolbar_children.push(A11yNodeId(id));
+            nodes.push((A11yNodeId(id), node));
+        }
+        for (id, label) in [
+            (A11Y_ZOOM_OUT, strings::ZOOM_OUT.to_owned()),
+            (
+                A11Y_ZOOM_RESET,
+                format!("{}: {}", strings::ZOOM_RESET, strings::zoom_percent(zoom)),
+            ),
+            (A11Y_ZOOM_IN, strings::ZOOM_IN.to_owned()),
+            (A11Y_ZOOM_FIT, strings::ZOOM_FIT.to_owned()),
+        ] {
+            let mut node = A11yNode::new(A11yRole::Button);
+            node.set_label(label);
+            node.add_action(A11yAction::Click);
+            node.add_action(A11yAction::Focus);
             toolbar_children.push(A11yNodeId(id));
             nodes.push((A11yNodeId(id), node));
         }
@@ -270,41 +302,12 @@ pub(crate) fn build_accessibility_tree(snapshot: A11ySnapshot<'_>) -> TreeUpdate
             nodes.push((A11yNodeId(A11Y_CANVAS), canvas));
             content_children.push(A11yNodeId(A11Y_CANVAS));
             if let Some(n) = selected {
-                for (index, (label, value)) in [
-                    (strings::NAME, n.name.clone()),
-                    (strings::KIND, strings::kind_label(&n.kind).to_owned()),
-                    (strings::POSITION_X, crate::shell::format_number(n.bounds.x)),
-                    (strings::POSITION_Y, crate::shell::format_number(n.bounds.y)),
-                    (strings::WIDTH, crate::shell::format_number(n.bounds.width)),
-                    (
-                        strings::HEIGHT,
-                        crate::shell::format_number(n.bounds.height),
-                    ),
-                    (
-                        strings::OPACITY,
-                        format!("{} %", crate::shell::format_number(n.opacity * 100.0)),
-                    ),
-                    (
-                        strings::FILL,
-                        n.fill
-                            .map_or_else(|| strings::NO_FILL.to_owned(), |c| c.hex()),
-                    ),
-                    (
-                        strings::FILL_OPACITY,
-                        n.fill
-                            .map_or_else(String::new, |c| format!("{} %", c.opacity_percent())),
-                    ),
-                    (
-                        strings::VISIBLE,
-                        if n.visible { strings::YES } else { strings::NO }.to_owned(),
-                    ),
-                    (
-                        strings::LOCKED,
-                        if n.locked { strings::YES } else { strings::NO }.to_owned(),
-                    ),
-                ]
-                .into_iter()
-                .enumerate()
+                // Editable properties are exposed as fields further below;
+                // only the read-only ones are labels.
+                for (index, (label, value)) in
+                    [(strings::KIND, strings::kind_label(&n.kind).to_owned())]
+                        .into_iter()
+                        .enumerate()
                 {
                     let id = A11yNodeId(A11Y_PROPERTY_BASE + index as u64);
                     let mut node = A11yNode::new(A11yRole::Label);
@@ -316,9 +319,6 @@ pub(crate) fn build_accessibility_tree(snapshot: A11ySnapshot<'_>) -> TreeUpdate
             }
             if let Some(n) = selected {
                 let extra = match &n.kind {
-                    designer_core::NodeKind::Rectangle { corner_radius } => {
-                        Some((strings::RADIUS, crate::shell::format_number(*corner_radius)))
-                    }
                     designer_core::NodeKind::Text { content, .. } => {
                         Some((strings::CONTENT, content.clone()))
                     }
@@ -434,6 +434,141 @@ pub(crate) fn build_accessibility_tree(snapshot: A11ySnapshot<'_>) -> TreeUpdate
         content_children.push(A11yNodeId(A11Y_STATUS_NODE));
         nodes.push((A11yNodeId(A11Y_STATUS_NODE), status_node));
     }
+    if matches!(screen, Screen::Design | Screen::Preview)
+        && let Some(page) = page
+    {
+        let mut rows = Vec::new();
+        flatten(&page.nodes, 0, &mut rows);
+        if screen == Screen::Design {
+            for (_, n) in rows {
+                for (index, label, enabled, toggled) in [
+                    (0, strings::VISIBLE, !n.locked, Some(n.visible)),
+                    (1, strings::LOCKED, true, Some(n.locked)),
+                    (
+                        2,
+                        strings::RAISE_LAYER,
+                        !n.locked && crate::inspector::reorder(&page.nodes, n.id, true).is_some(),
+                        None,
+                    ),
+                    (
+                        3,
+                        strings::LOWER_LAYER,
+                        !n.locked && crate::inspector::reorder(&page.nodes, n.id, false).is_some(),
+                        None,
+                    ),
+                ] {
+                    // Raise and lower exist only for the selected layer.
+                    if index >= 2 && selection != Some(n.id) {
+                        continue;
+                    }
+                    let id = A11Y_LAYER_CONTROL_BASE + n.id.0 * 4 + index;
+                    let mut control = A11yNode::new(A11yRole::Button);
+                    control.set_label(format!("{label}: {}", n.name));
+                    if let Some(v) = toggled {
+                        control.set_toggled(if v {
+                            accesskit::Toggled::True
+                        } else {
+                            accesskit::Toggled::False
+                        });
+                    }
+                    if enabled {
+                        control.add_action(A11yAction::Click);
+                        control.add_action(A11yAction::Focus);
+                    } else {
+                        control.set_disabled();
+                    }
+                    nodes.push((A11yNodeId(id), control));
+                    content_children.push(A11yNodeId(id));
+                }
+            }
+        }
+        if let Some(n) = selection.and_then(|id| page.node(id)) {
+            let mut effective = n.clone();
+            let overrides = if screen == Screen::Preview {
+                page.prototype
+                    .state(prototype_state)
+                    .and_then(|s| s.overrides.iter().find(|o| o.node == n.id))
+            } else {
+                None
+            };
+            if let Some(o) = overrides {
+                if let Some(b) = o.bounds {
+                    effective.bounds = b;
+                }
+                if let Some(f) = o.fill {
+                    effective.fill = match f {
+                        designer_core::FillOverride::Clear => None,
+                        designer_core::FillOverride::Set(c) => Some(c),
+                    };
+                }
+                if let Some(v) = o.opacity {
+                    effective.opacity = v;
+                }
+            }
+            for field in crate::inspector::Field::ALL
+                .into_iter()
+                .filter(|f| f.available(n))
+            {
+                use crate::inspector::Field;
+                let toggle = matches!(field, Field::Visible | Field::Locked | Field::Clips);
+                let enabled = !n.locked || field == Field::Locked;
+                let mut control = A11yNode::new(if toggle {
+                    A11yRole::CheckBox
+                } else {
+                    A11yRole::TextInput
+                });
+                control.set_label(field.label());
+                control.set_value(field.value(&effective));
+                if toggle {
+                    control.set_toggled(if field.value(n) == "true" {
+                        accesskit::Toggled::True
+                    } else {
+                        accesskit::Toggled::False
+                    });
+                }
+                if enabled {
+                    control.add_action(A11yAction::Focus);
+                    control.add_action(if toggle {
+                        A11yAction::Click
+                    } else {
+                        A11yAction::SetValue
+                    });
+                } else {
+                    control.set_disabled();
+                }
+                let id = A11yNodeId(A11Y_EDIT_BASE + field as u64);
+                nodes.push((id, control));
+                content_children.push(id);
+                if screen == Screen::Preview
+                    && matches!(
+                        field,
+                        Field::X
+                            | Field::Y
+                            | Field::Width
+                            | Field::Height
+                            | Field::Fill
+                            | Field::Opacity
+                    )
+                {
+                    let id = A11Y_RESET_BASE + field as u64;
+                    nodes.push(accessible_button(
+                        id,
+                        strings::RESET_OVERRIDE,
+                        enabled,
+                        None,
+                    ));
+                    content_children.push(A11yNodeId(id));
+                }
+            }
+            nodes.push(accessible_button(
+                A11Y_NO_FILL,
+                strings::NO_FILL,
+                !n.locked,
+                Some(effective.fill.is_none()),
+            ));
+            content_children.push(A11yNodeId(A11Y_NO_FILL));
+        }
+    }
     content.set_children(content_children);
     nodes.push((A11yNodeId(A11Y_CONTENT_GROUP), content));
 
@@ -455,6 +590,30 @@ pub(crate) fn build_accessibility_tree(snapshot: A11ySnapshot<'_>) -> TreeUpdate
     }
 }
 
+fn accessible_button(
+    id: u64,
+    label: &str,
+    enabled: bool,
+    toggled: Option<bool>,
+) -> (A11yNodeId, A11yNode) {
+    let mut node = A11yNode::new(A11yRole::Button);
+    node.set_label(label);
+    if enabled {
+        node.add_action(A11yAction::Click);
+        node.add_action(A11yAction::Focus);
+    } else {
+        node.set_disabled();
+    }
+    if let Some(v) = toggled {
+        node.set_toggled(if v {
+            accesskit::Toggled::True
+        } else {
+            accesskit::Toggled::False
+        });
+    }
+    (A11yNodeId(id), node)
+}
+
 fn flatten<'a>(nodes: &'a [Node], depth: usize, rows: &mut Vec<(usize, &'a Node)>) {
     // Topmost layer first, as painted last.
     for node in nodes.iter().rev() {
@@ -465,6 +624,43 @@ fn flatten<'a>(nodes: &'a [Node], depth: usize, rows: &mut Vec<(usize, &'a Node)
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn editable_properties_expose_values_and_set_value_actions() {
+        let mut doc = designer_core::sample_document();
+        let id = doc.pages[0].nodes[0].id;
+        for locked in [false, true] {
+            doc.pages[0].nodes[0].locked = locked;
+            let mut state = snapshot(Screen::Design);
+            state.page = Some(&doc.pages[0]);
+            state.selection = Some(id);
+            let tree = build_accessibility_tree(state);
+            for field in crate::inspector::Field::ALL
+                .into_iter()
+                .filter(|f| f.available(&doc.pages[0].nodes[0]))
+            {
+                let node = &tree
+                    .nodes
+                    .iter()
+                    .find(|(id, _)| id.0 == A11Y_EDIT_BASE + field as u64)
+                    .unwrap()
+                    .1;
+                assert_eq!(node.label(), Some(field.label()));
+                assert_eq!(
+                    node.is_disabled(),
+                    locked && field != crate::inspector::Field::Locked
+                );
+                if !matches!(
+                    field,
+                    crate::inspector::Field::Visible
+                        | crate::inspector::Field::Locked
+                        | crate::inspector::Field::Clips
+                ) {
+                    assert_eq!(node.role(), A11yRole::TextInput);
+                    assert_eq!(node.supports_action(A11yAction::SetValue), !locked);
+                }
+            }
+        }
+    }
     use super::*;
 
     #[test]
@@ -539,7 +735,17 @@ mod tests {
             ),
             (
                 Screen::Design,
-                vec![A11Y_UNDO, A11Y_REDO, A11Y_DELETE, A11Y_TIMELINE, A11Y_PLAY],
+                vec![
+                    A11Y_UNDO,
+                    A11Y_REDO,
+                    A11Y_DELETE,
+                    A11Y_ZOOM_OUT,
+                    A11Y_ZOOM_RESET,
+                    A11Y_ZOOM_IN,
+                    A11Y_ZOOM_FIT,
+                    A11Y_TIMELINE,
+                    A11Y_PLAY,
+                ],
             ),
             (
                 Screen::Preview,
@@ -593,15 +799,33 @@ mod tests {
         state.page = Some(&doc.pages[0]);
         state.selection = Some(doc.pages[0].nodes[0].id);
         let tree = build_accessibility_tree(state);
+        let width = &tree
+            .nodes
+            .iter()
+            .find(|(id, _)| id.0 == A11Y_EDIT_BASE + crate::inspector::Field::Width as u64)
+            .unwrap()
+            .1;
+        assert_eq!(width.label(), Some(strings::WIDTH));
+        assert_eq!(
+            width.value(),
+            Some(crate::inspector::number(doc.pages[0].nodes[0].bounds.width).as_str())
+        );
+        // The kind is the only read-only property label left.
         assert!(
             tree.nodes
                 .iter()
-                .find(|(id, _)| id.0 == A11Y_PROPERTY_BASE + 4)
+                .find(|(id, _)| id.0 == A11Y_PROPERTY_BASE)
                 .unwrap()
                 .1
                 .value()
                 .unwrap()
-                .starts_with(strings::WIDTH)
+                .starts_with(strings::KIND)
+        );
+        assert!(
+            !tree
+                .nodes
+                .iter()
+                .any(|(id, _)| id.0 == A11Y_PROPERTY_BASE + 1)
         );
         let mut state = snapshot(Screen::Preview);
         state.page = Some(&doc.pages[0]);
@@ -728,6 +952,7 @@ mod tests {
             prototype_state: designer_core::INITIAL_STATE,
             can_import: false,
             import_summary: "none".into(),
+            zoom: Some(1.0),
         }
     }
     #[test]

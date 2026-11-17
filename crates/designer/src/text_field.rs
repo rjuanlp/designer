@@ -2,6 +2,9 @@
 
 use std::ops::Range;
 
+#[cfg(windows)]
+pub(crate) mod view;
+
 /// Editable text and a reversible editing session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EditState {
