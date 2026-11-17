@@ -2,7 +2,7 @@
 
 use std::{io, sync::mpsc, thread, time::Duration};
 
-use designer_engine::bridge::{SessionReply, SessionRequest, WINDOWS_SESSION_PIPE};
+use designer_engine::bridge::{SessionReply, SessionRequest, windows_session_pipe};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::windows::named_pipe::{NamedPipeServer, ServerOptions},
@@ -24,7 +24,7 @@ pub struct PendingRequest {
 pub fn start_pipe_server(
     requests: async_mpsc::UnboundedSender<PendingRequest>,
 ) -> Result<(), String> {
-    start_pipe_server_at(requests, WINDOWS_SESSION_PIPE.to_owned())
+    start_pipe_server_at(requests, windows_session_pipe())
 }
 
 fn start_pipe_server_at(

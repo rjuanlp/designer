@@ -10,6 +10,7 @@
 
 pub mod bridge;
 pub mod dsg;
+pub mod identity;
 pub mod import;
 mod session;
 

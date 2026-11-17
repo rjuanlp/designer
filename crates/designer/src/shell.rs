@@ -133,7 +133,12 @@ fn drag_operations(
     match drag {
         Drag::Create { start } => {
             let (kind, fill) = match tool {
-                Tool::Frame => (NodeKind::Frame, FRAME_FILL),
+                Tool::Frame => (
+                    NodeKind::Frame {
+                        clips_content: true,
+                    },
+                    FRAME_FILL,
+                ),
                 Tool::Rectangle => (NodeKind::Rectangle { corner_radius: 0.0 }, SHAPE_FILL),
                 Tool::Ellipse => (NodeKind::Ellipse, SHAPE_FILL),
                 Tool::Move | Tool::Text | Tool::Pen => return None,

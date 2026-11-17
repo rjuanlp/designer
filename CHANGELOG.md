@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Add a pure single-line editing state with UTF-16 replacement ranges,
+  composition replacement, selection, deletion, commit and cancellation tests.
+  GPUI input-handler and inspector integration remain pending.
+- Extend the operation serialization round-trip fixture to cover all five
+  new editor operations.
+- Centralize application identity and per-user data-directory resolution.
+- Add undoable corner-radius, visibility, locking, sibling-order and frame-clip
+  operations, including MCP capabilities and transaction support.
+- Write DSG schema 4, retaining readers for versions 1 to 3 and defaulting
+  legacy frames to unclipped. Render ancestor frame clips and honor them in hits.
+- Honor Figma frame clipping and enable clipping for newly drawn frames.
+- Add screen/document transform round trips and bounded pointer-anchor zoom math.
+  Inspector editing, interactive zoom/pan, arrow navigation, preferences and
+  recovery remain outstanding.
+
 - Add Windows live MCP attachment with `--connect`/`--pipe`, capability discovery,
   bounded local pipe clients and drag/prompt mutation rejection.
 - Hold OS advisory sidecar locks for file-backed sessions, including headless MCP.

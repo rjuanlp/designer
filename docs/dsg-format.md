@@ -1,11 +1,17 @@
-# DSG format — current v3 subset
+# DSG format — current v4 subset
 
 The engine reads and writes ZIP archives containing UTF-8 `manifest.json`
 and `document.json`. The manifest has `format: "designer-dsg"`,
-`schema_version: 3` and a generator string. Document IDs survive save/open.
-The reader remains compatible with versions 1 and 2; new writes use version 3
-for interactive prototype states and transitions. Documents are validated
+`schema_version: 4` and a generator string. Document IDs survive save/open.
+The reader remains compatible with versions 1 to 3; new writes use version 4
+for frame clipping. Frame kinds contain `clips_content: bool`; an absent field
+defaults to false, preserving unclipped rendering of older documents.
+Interactive prototype states and transitions remain supported. Documents are validated
 before writing and before becoming active state.
+
+Contract coverage includes reading a generated version 3 archive with the
+clipping field omitted, and a version 4 write/read round trip with clipping
+enabled. Text-field editing state is transient and adds no archive fields.
 
 The reader rejects malformed ZIP/JSON, missing entries, unsafe archive paths,
 invalid model values and future schema versions. Limits: 256 MiB for an on-disk

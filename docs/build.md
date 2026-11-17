@@ -65,6 +65,25 @@ editing and path/morph-key authoring are not yet available in the UI. The
 document model and renderer support paths and morph keyframes between paths
 with matching segment topology.
 
+Application identity is centralized in `designer_engine::identity`: display
+name, storage directory, named pipe prefix and recovery directory name.
+`data_dir()` resolves `DESIGNER_DATA_DIR` first, then `%APPDATA%/Designer`,
+falling back to the temporary directory plus `Designer`. Empty environment
+values are treated as absent. Preferences and crash recovery do not yet use
+this path; their persistence and UI remain unimplemented.
+
+New frames drawn with the frame tool clip descendants. Figma JSON imports
+honor `clipsContent`; legacy documents remain unclipped unless explicitly
+changed. The renderer uses ancestor Vello clips and excludes clipped-away
+descendants from hit testing. The transform API includes bounded pointer-anchor
+zoom math; interactive zoom/pan controls are not yet wired into the shell.
+
+`text_field::EditState` provides window-independent single-line editing with
+UTF-16 platform ranges and composition replacement. Tests cover Spanish dead-key
+composition, supplementary Unicode characters, selection, deletion and reversible
+commits. It is not yet connected to a GPUI input handler or the inspector;
+these unit tests do not establish working IME input in the application.
+
 ## Troubleshooting
 
 - `link.exe` missing: install the C++ workload, not only the Visual Studio installer.

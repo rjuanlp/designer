@@ -15,6 +15,7 @@
 
 mod prototype_preview;
 mod strings;
+pub mod text_field;
 mod theme;
 #[cfg(any(windows, test))]
 mod timeline;

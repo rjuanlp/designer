@@ -6,7 +6,7 @@ use std::{fmt::Display, path::Path};
 use designer_core::NodeKind;
 
 /// Application name, also used in the window title.
-pub const APP_NAME: &str = "Designer";
+pub const APP_NAME: &str = designer_engine::identity::DISPLAY_NAME;
 
 /// Top-level sections of the application.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,7 +131,7 @@ impl NarrowPanel {
 /// User-facing name of a node kind.
 pub fn kind_label(kind: &NodeKind) -> &'static str {
     match kind {
-        NodeKind::Frame => "Marco",
+        NodeKind::Frame { .. } => "Marco",
         NodeKind::Group => "Grupo",
         NodeKind::Rectangle { .. } => "Rectángulo",
         NodeKind::Ellipse => "Elipse",

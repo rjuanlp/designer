@@ -279,7 +279,12 @@ impl ImportContext {
 
         let kind_name = string(source, "type").unwrap_or_default();
         let kind = match kind_name.as_str() {
-            "FRAME" | "COMPONENT" | "INSTANCE" | "COMPONENT_SET" | "SECTION" => NodeKind::Frame,
+            "FRAME" | "COMPONENT" | "INSTANCE" | "COMPONENT_SET" | "SECTION" => NodeKind::Frame {
+                clips_content: source
+                    .get("clipsContent")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            },
             "GROUP" => NodeKind::Group,
             "RECTANGLE" => {
                 let corner_radius = number(source, "cornerRadius").unwrap_or(0.0);
@@ -378,9 +383,7 @@ impl ImportContext {
         {
             self.warn(source_path, "El modo de fusión no se importa.".to_owned());
         }
-        if source.get("clipsContent").and_then(Value::as_bool) == Some(true)
-            || source.get("isMask").and_then(Value::as_bool) == Some(true)
-        {
+        if source.get("isMask").and_then(Value::as_bool) == Some(true) {
             self.warn(
                 source_path,
                 "El recorte de contenido y las máscaras no se importan.".to_owned(),

@@ -145,7 +145,9 @@ pub fn sample_document() -> Document {
     let mut screen = node(
         &mut ids,
         "Pantalla de perfil",
-        NodeKind::Frame,
+        NodeKind::Frame {
+            clips_content: false,
+        },
         Rect::new(120.0, 80.0, 360.0, 560.0),
         Some(Color::rgb(250, 250, 252)),
     );
@@ -166,7 +168,9 @@ pub fn sample_document() -> Document {
     let mut palette = node(
         &mut ids,
         "Paleta",
-        NodeKind::Frame,
+        NodeKind::Frame {
+            clips_content: false,
+        },
         Rect::new(560.0, 80.0, 280.0, 200.0),
         Some(PAPER),
     );
@@ -251,7 +255,7 @@ mod tests {
         for top in &page.nodes {
             walk(top, &mut |node| {
                 let index = match node.kind {
-                    NodeKind::Frame => 0,
+                    NodeKind::Frame { .. } => 0,
                     NodeKind::Group => 1,
                     NodeKind::Rectangle { .. } => 2,
                     NodeKind::Ellipse => 3,

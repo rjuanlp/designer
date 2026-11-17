@@ -230,8 +230,12 @@ impl PathData {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum NodeKind {
-    /// A container that clips nothing yet and may have a fill.
-    Frame,
+    /// A container with optional descendant clipping and fill.
+    Frame {
+        /// Clip descendants to the frame bounds. Older files default to false.
+        #[serde(default)]
+        clips_content: bool,
+    },
     /// A container without its own appearance.
     Group,
     /// A rectangle with one radius for all corners.
