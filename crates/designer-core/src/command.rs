@@ -121,6 +121,15 @@ pub enum Operation {
         /// New fill, or `None` to remove it.
         fill: Option<Color>,
     },
+    /// Replace the geometry of a path node without changing its bounds.
+    SetPath {
+        /// Target page.
+        page: PageId,
+        /// Target path node.
+        node: NodeId,
+        /// New normalized path geometry.
+        path: PathData,
+    },
     /// Replace the base opacity of a node.
     SetOpacity {
         /// Target page.
@@ -289,7 +298,7 @@ pub enum Operation {
 
 impl Operation {
     /// The `op` tag of every operation, as serialized.
-    pub const NAMES: [&'static str; 24] = [
+    pub const NAMES: [&'static str; 25] = [
         "set_corner_radius",
         "set_visible",
         "set_locked",
@@ -300,6 +309,7 @@ impl Operation {
         "set_bounds",
         "set_name",
         "set_fill",
+        "set_path",
         "set_opacity",
         "set_keyframe",
         "remove_keyframe",
@@ -515,6 +525,14 @@ impl Document {
             }
             Operation::SetFill { page, node, fill } => {
                 self.node_mut(*page, *node)?.fill = *fill;
+                affected.push(*node);
+            }
+            Operation::SetPath { page, node, path } => {
+                let target = self.node_mut(*page, *node)?;
+                let NodeKind::Path { path: current } = &mut target.kind else {
+                    return Err(CommandError::WrongNodeKind(*node));
+                };
+                *current = path.clone();
                 affected.push(*node);
             }
             Operation::SetOpacity {
@@ -799,6 +817,7 @@ impl Operation {
         "set_locked",
         "reorder_node",
         "set_clips_content",
+        "set_path",
     ];
     /// Serialized discriminator; exhaustive so new variants require capability updates.
     pub fn discriminator(&self) -> &'static str {
@@ -827,6 +846,7 @@ impl Operation {
             Self::RemoveSequenceKeyframe { .. } => Self::DISCRIMINATORS[16],
             Self::SetSequenceMorphKeyframe { .. } => Self::DISCRIMINATORS[17],
             Self::RemoveSequenceMorphKeyframe { .. } => Self::DISCRIMINATORS[18],
+            Self::SetPath { .. } => "set_path",
         }
     }
 }
@@ -905,6 +925,64 @@ mod tests {
             ],
             closed: true,
         }
+    }
+
+    #[test]
+    fn set_path_replaces_geometry_and_rejects_morph_topology_changes() {
+        let add_path = Operation::AddNode {
+            page: PAGE,
+            parent: None,
+            name: "path".into(),
+            kind: NodeKind::Path { path: test_path() },
+            bounds: Rect::new(0.0, 0.0, 100.0, 100.0),
+            fill: None,
+        };
+        let source = Document::empty("path");
+        let (created, _) = source.transact(&[add_path]).expect("valid path");
+        let mut moved = test_path();
+        moved.start.x = 0.25;
+        let (updated, affected) = created
+            .transact(&[Operation::SetPath {
+                page: PAGE,
+                node: NodeId(1),
+                path: moved.clone(),
+            }])
+            .expect("valid replacement");
+        assert_eq!(affected, [NodeId(1)]);
+        assert_eq!(
+            updated.pages[0].node(NodeId(1)).expect("path node").kind,
+            NodeKind::Path { path: moved }
+        );
+        assert_eq!(
+            created.pages[0].node(NodeId(1)).expect("source path").kind,
+            NodeKind::Path { path: test_path() }
+        );
+
+        let (animated, _) = created
+            .transact(&[Operation::SetMorphKeyframe {
+                page: PAGE,
+                node: NodeId(1),
+                time_ms: 0,
+                path: test_path(),
+                easing: Easing::Linear,
+            }])
+            .expect("valid morph key");
+        let animated_before = animated.clone();
+        let mut incompatible = test_path();
+        incompatible.segments[0] = PathSegment::CubicTo {
+            control1: PathPoint { x: 0.2, y: 0.1 },
+            control2: PathPoint { x: 0.8, y: 0.1 },
+            end: PathPoint { x: 1.0, y: 0.0 },
+        };
+        assert!(matches!(
+            animated.transact(&[Operation::SetPath {
+                page: PAGE,
+                node: NodeId(1),
+                path: incompatible,
+            }]),
+            Err(CommandError::Invalid(ModelError::InvalidAnimation(..)))
+        ));
+        assert_eq!(animated, animated_before);
     }
 
     #[test]
@@ -1352,6 +1430,11 @@ mod tests {
                 page: PAGE,
                 node: NodeId(1),
                 fill: None,
+            },
+            Operation::SetPath {
+                page: PAGE,
+                node: NodeId(1),
+                path: test_path(),
             },
             Operation::SetOpacity {
                 page: PAGE,
