@@ -5,6 +5,14 @@ transport. Build it with `cargo build --release -p designer-mcp`, then launch
 the resulting executable directly from the MCP client. It opens the sample
 document by default or a `.dsg` file supplied with `--open`.
 
+The desktop shell also includes tooltip-only icon buttons, interactive zoom/pan
+controls, keyboard arrow navigation for layers and tabs, and the newer editor
+operations `set_corner_radius`, `set_visible`, `set_locked`, `reorder_node`
+and `set_clips_content`.
+Preferences display the active named pipe and both live (`--connect`) and
+headless (`--open`) client command forms. Opened and saved documents are tracked
+in the desktop shell's recent-document list.
+
 ## Tools
 
 | Tool | Purpose |

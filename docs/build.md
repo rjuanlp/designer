@@ -60,6 +60,10 @@ Launch options set the initial state, mainly for screenshots:
 Keyboard: Tab and Shift+Tab move focus, Enter or Space activates the focused
 control. Ctrl+S saves, Ctrl+Shift+S saves as, Ctrl+O opens, Ctrl+Z undoes,
 Ctrl+Y or Ctrl+Shift+Z redoes, Escape cancels a drag. Ctrl+T toggles the timeline and Ctrl+Shift+L switches theme.
+Arrow Up/Down changes the active list selection, while Home/End jump to its
+first/last item. This covers layers, recent documents, prototype states, and
+timeline sequences/keyframes after selecting one of those timeline rows.
+Left/Right moves between the top-level sections.
 
 In the timeline, select a layer and property, seek to a time, then add or
 adjust a keyframe. The curve button cycles through constant, linear, ease-in,
@@ -76,14 +80,21 @@ Application identity is centralized in `designer_engine::identity`: display
 name, storage directory, named pipe prefix and recovery directory name.
 `data_dir()` resolves `DESIGNER_DATA_DIR` first, then `%APPDATA%/Designer`,
 falling back to the temporary directory plus `Designer`. Empty environment
-values are treated as absent. Preferences and crash recovery do not yet use
-this path; their persistence and UI remain unimplemented.
+values are treated as absent. The app stores preferences under
+`<data_dir>/preferences.json` and keeps unsaved-session snapshots under
+`<data_dir>/recovery/`. Dirty documents are snapshotted at most once every
+30 seconds; abandoned snapshots are offered at startup for recovery or explicit
+discard. Invalid snapshots are reported and retained unless explicitly
+discarded.
+
+The Preferences section shows the active local session pipe and the
+`designer-mcp --connect` and `designer-mcp --open <file.dsg>` command forms.
 
 New frames drawn with the frame tool clip descendants. Figma JSON imports
 honor `clipsContent`; legacy documents remain unclipped unless explicitly
 changed. The renderer uses ancestor Vello clips and excludes clipped-away
 descendants from hit testing. The transform API includes bounded pointer-anchor
-zoom math; interactive zoom/pan controls are not yet wired into the shell.
+zoom math, and the shell exposes interactive zoom and pan controls.
 
 `text_field::EditState` provides window-independent single-line editing with
 UTF-16 platform ranges and composition replacement. Tests cover Spanish dead-key

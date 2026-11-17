@@ -20,10 +20,12 @@ full vertical slice remain pending. See the build log for validation.
 
 Implementation checkpoint **hito 4**: keyframe editing, playback, preset
 easing curves and nested sequences are implemented. Core path rendering and
-same-topology morph evaluation are also implemented, but path editing,
-morph-key authoring and direct curve editing remain pending in the UI. Hito 4
-and roadmap item 4 therefore remain partial; interactive states are tracked in
-roadmap item 5. See the build log for validation.
+same-topology morph evaluation are also implemented, and the core exposes an
+atomic `SetPath` operation that preserves topology when morph keys exist.
+Canvas path editing, morph-key authoring and direct curve editing remain
+pending in the UI. Hito 4 and roadmap item 4 therefore remain partial;
+interactive states are tracked in roadmap item 5. See the build log for
+validation.
 
 Implementation checkpoint **hito 5** on `codex/hito-5-finish` adds Windows
 live GUI/MCP sharing, OS sidecar locks, capability discovery and AccessKit

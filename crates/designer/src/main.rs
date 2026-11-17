@@ -39,6 +39,8 @@ use theme::metrics;
 pub struct LaunchOptions {
     /// Initial window size in logical pixels.
     pub size: (f32, f32),
+    /// Whether `--size` explicitly supplied the initial size.
+    pub size_explicit: bool,
     /// Section shown first.
     pub screen: Screen,
     /// Zero-based index of the page shown first.
@@ -59,6 +61,7 @@ impl Default for LaunchOptions {
     fn default() -> Self {
         Self {
             size: (metrics::WINDOW_WIDTH, metrics::WINDOW_HEIGHT),
+            size_explicit: false,
             screen: Screen::Design,
             page: 0,
             select: None,
@@ -106,6 +109,7 @@ pub fn parse_options(arguments: impl IntoIterator<Item = String>) -> Result<Laun
                         ));
                     }
                 };
+                options.size_explicit = true;
             }
             "--screen" => {
                 let text = value("--screen")?;
@@ -157,8 +161,10 @@ mod app {
     use crate::{
         LaunchOptions,
         shell::{
-            self, Cancel, DeleteSelection, FocusNext, FocusPrevious, NewDocument, Open, Redo, Save,
-            SaveAs, Shell, ToggleTheme, ToggleTimeline, Undo, ZoomFit, ZoomIn, ZoomOut, ZoomReset,
+            self, Cancel, DeleteSelection, FocusNext, FocusPrevious, MoveSelectionDown,
+            MoveSelectionEnd, MoveSelectionHome, MoveSelectionUp, MoveTabLeft, MoveTabRight,
+            NewDocument, Open, Redo, Save, SaveAs, Shell, ToggleTheme, ToggleTimeline, Undo,
+            ZoomFit, ZoomIn, ZoomOut, ZoomReset,
         },
         strings,
         theme::metrics,
@@ -193,6 +199,12 @@ mod app {
                 cx.bind_keys([
                     KeyBinding::new("ctrl-t", ToggleTimeline, context),
                     KeyBinding::new("ctrl-shift-l", ToggleTheme, context),
+                    KeyBinding::new("up", MoveSelectionUp, context),
+                    KeyBinding::new("down", MoveSelectionDown, context),
+                    KeyBinding::new("home", MoveSelectionHome, context),
+                    KeyBinding::new("end", MoveSelectionEnd, context),
+                    KeyBinding::new("left", MoveTabLeft, context),
+                    KeyBinding::new("right", MoveTabRight, context),
                     KeyBinding::new("tab", FocusNext, context),
                     KeyBinding::new("shift-tab", FocusPrevious, context),
                     KeyBinding::new("ctrl-z", Undo, context),
@@ -215,7 +227,18 @@ mod app {
                     ["delete", "backspace", "escape"]
                         .map(|key| KeyBinding::new(key, gpui::NoAction, Some("TextField"))),
                 );
-                let (width, height) = options.size;
+                let saved_window = designer_engine::preferences::Preferences::load(
+                    &designer_engine::identity::data_dir(),
+                )
+                .preferences
+                .window_size;
+                let (width, height) = if !options.size_explicit {
+                    saved_window
+                        .map(|size| (size.width, size.height))
+                        .unwrap_or(options.size)
+                } else {
+                    options.size
+                };
                 let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
                 let opened = cx.open_window(
                     WindowOptions {
@@ -307,6 +330,7 @@ mod tests {
         ])
         .expect("valid options");
         assert_eq!(options.size, (390.0, 844.0));
+        assert!(options.size_explicit);
         assert_eq!(options.screen, Screen::Preferences);
         assert_eq!(options.page, 1);
         assert_eq!(options.select, Some(7));

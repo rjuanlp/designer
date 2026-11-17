@@ -5,9 +5,10 @@ mod timeline_view;
 
 use std::{
     cell::RefCell,
+    collections::VecDeque,
     path::{Path, PathBuf},
     rc::Rc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use crate::accessibility::*;
@@ -16,13 +17,15 @@ use accesskit::{Rect as A11yRect, TreeUpdate};
 use designer_core::{
     Color, DEFAULT_PROTOTYPE_DURATION_MS, Document, Easing, FillOverride, INITIAL_STATE,
     MAX_PROTOTYPE_STATES, Node, NodeId, NodeKind, NodeOverride, Operation, Page, PageId,
-    PrototypeState, PrototypeStateId, PrototypeTransition, PrototypeTrigger, Rect, sample_document,
+    PrototypeState, PrototypeStateId, PrototypeTransition, PrototypeTrigger, Rect, Sequence,
+    SequenceId, sample_document,
 };
 use designer_engine::{
     Session,
     bridge::{SessionReply, SessionRequest, execute_session_request},
     dsg,
     import::{self, ImportReport, ImportResult},
+    recovery::{AutosaveClock, Orphan, RecoveryStore},
 };
 use designer_gpu_bridge::SharedFrame;
 use designer_render::document::hit_test;
@@ -49,6 +52,18 @@ actions!(
         ToggleTimeline,
         /// Switch between the light and dark themes.
         ToggleTheme,
+        /// Move the current layer selection up.
+        MoveSelectionUp,
+        /// Move the current layer selection down.
+        MoveSelectionDown,
+        /// Select the first item in the current list.
+        MoveSelectionHome,
+        /// Select the last item in the current list.
+        MoveSelectionEnd,
+        /// Move the current tab selection left.
+        MoveTabLeft,
+        /// Move the current tab selection right.
+        MoveTabRight,
         /// Move keyboard focus to the next control.
         FocusNext,
         /// Move keyboard focus to the previous control.
@@ -95,6 +110,8 @@ const ZOOM_STEP: f64 = 1.25;
 const WHEEL_LINE: f32 = 40.0;
 /// Natural-log zoom change per wheel pixel: one 120-pixel notch is about 20%.
 const WHEEL_ZOOM_RATE: f64 = 0.0015;
+/// How often the UI checks whether the 30-second recovery autosave is due.
+const AUTOSAVE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// A pointer drag on the canvas, in page coordinates.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -124,6 +141,19 @@ enum Pending {
     Open,
     Import,
     Close,
+}
+
+#[derive(Clone, Copy)]
+enum ListMove {
+    Delta(isize),
+    First,
+    Last,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TimelineList {
+    Sequences,
+    Keyframes,
 }
 
 /// The rectangle between two points, snapped to whole document units.
@@ -235,6 +265,16 @@ pub struct Shell {
     import_preview: Option<ImportResult>,
     import_report: Option<ImportReport>,
     pending_import: Option<ImportResult>,
+    recent_documents: Vec<PathBuf>,
+    recent_selection: Option<usize>,
+    timeline_list: Option<TimelineList>,
+    recovery: RecoveryStore,
+    recovery_queue: VecDeque<Orphan>,
+    autosave_clock: AutosaveClock,
+    autosave_in_flight: bool,
+    recovery_clear_pending: bool,
+    close_after_autosave: bool,
+    close_approved: bool,
     window_title: String,
     page: PageId,
     selection: Option<NodeId>,
@@ -254,6 +294,17 @@ impl Shell {
     /// Create the shell with the document named on the command line, or the
     /// built-in sample document.
     pub fn new(options: &LaunchOptions, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let data_dir = designer_engine::identity::data_dir();
+        let recovery = RecoveryStore::new(&data_dir);
+        let recovery_queue = recovery.orphans().into();
+        let mut preferences =
+            designer_engine::preferences::Preferences::load(&designer_engine::identity::data_dir());
+        let dark = if options.light {
+            false
+        } else {
+            preferences.preferences.theme != designer_engine::preferences::Theme::Light
+        };
+        let timeline_open = options.timeline || preferences.preferences.timeline_open;
         let mut status = None;
         let session = match &options.open {
             Some(path) => Session::open(path).unwrap_or_else(|error| {
@@ -262,6 +313,12 @@ impl Shell {
             }),
             None => Session::new(sample_document()),
         };
+        if let Some(path) = session.path() {
+            preferences.preferences.remember(path);
+            if let Err(error) = preferences.preferences.save(&data_dir) {
+                status = Some(strings::preferences_save_failed(&error).into());
+            }
+        }
         let document = session.document();
         let page = document
             .pages
@@ -308,7 +365,7 @@ impl Shell {
             }
         })
         .detach();
-        Self {
+        let shell = Self {
             session,
             fields: Vec::new(),
             field_target: None,
@@ -325,20 +382,46 @@ impl Shell {
             import_preview: None,
             import_report: None,
             pending_import: None,
+            recent_documents: preferences.preferences.recent.clone(),
+            recent_selection: None,
+            timeline_list: None,
+            recovery,
+            recovery_queue,
+            autosave_clock: AutosaveClock::default(),
+            autosave_in_flight: false,
+            recovery_clear_pending: false,
+            close_after_autosave: false,
+            close_approved: false,
             window_title: String::new(),
             page,
             selection,
             screen: options.screen,
             tool: Tool::Move,
-            timeline_open: options.timeline,
+            timeline_open,
             animation: crate::timeline::Timeline::default(),
             prototype_preview,
-            dark: !options.light,
+            dark,
             narrow_panel: options.panel,
             canvas: Rc::new(RefCell::new(CanvasHost::new())),
             focus: cx.focus_handle(),
             accessibility_sender,
-        }
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                tokio::time::sleep(AUTOSAVE_POLL_INTERVAL).await;
+                if this
+                    .update_in(cx, |this, window, cx| this.autosave_recovery(window, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+        cx.defer_in(window, |this, window, cx| {
+            this.offer_next_recovery(window, cx);
+        });
+        shell
     }
 
     /// Focus handle of the shell root, focused when the window opens.
@@ -386,6 +469,7 @@ impl Shell {
     }
 
     fn replace_session(&mut self, session: Session, cx: &mut Context<Self>) {
+        self.request_recovery_clear();
         self.fields.clear();
         self.field_target = None;
         self.animation = crate::timeline::Timeline::default();
@@ -686,7 +770,13 @@ impl Shell {
 
     fn save(&mut self, _: &Save, _: &mut Window, cx: &mut Context<Self>) {
         match self.session.save() {
-            Ok(true) => self.status = Some(strings::saved(self.session.path()).into()),
+            Ok(true) => {
+                self.status = Some(strings::saved(self.session.path()).into());
+                self.clear_recovery_after_save();
+                if let Some(path) = self.session.path().map(Path::to_owned) {
+                    self.remember_document(&path);
+                }
+            }
             Ok(false) => return self.save_as(cx),
             Err(error) => self.status = Some(strings::save_failed(&error).into()),
         }
@@ -719,10 +809,14 @@ impl Shell {
                 this.status = match result {
                     Ok(Ok(Some(path))) => {
                         let path = with_extension(path);
-                        Some(match this.session.save_as(&path) {
-                            Ok(()) => strings::saved(Some(&path)).into(),
-                            Err(error) => strings::save_failed(&error).into(),
-                        })
+                        match this.session.save_as(&path) {
+                            Ok(()) => {
+                                this.clear_recovery_after_save();
+                                this.remember_document(&path);
+                                Some(strings::saved(Some(&path)).into())
+                            }
+                            Err(error) => Some(strings::save_failed(&error).into()),
+                        }
                     }
                     Ok(Ok(None)) | Err(_) => return,
                     Ok(Err(error)) => Some(strings::dialog_failed(&error).into()),
@@ -823,6 +917,7 @@ impl Shell {
             Ok(session) => {
                 self.status = None;
                 self.replace_session(session, cx);
+                self.remember_document(path);
             }
             // The current document stays open and untouched.
             Err(error) => {
@@ -854,7 +949,17 @@ impl Shell {
                         Some(strings::import_applied(imported_count, warning_count).into());
                 }
             }
-            Pending::Close => window.remove_window(),
+            Pending::Close => {
+                if self.autosave_in_flight {
+                    self.request_recovery_clear();
+                    self.close_after_autosave = true;
+                    return;
+                }
+                self.request_recovery_clear();
+                self.save_preferences(window);
+                self.close_approved = true;
+                window.remove_window();
+            }
         }
     }
 
@@ -890,7 +995,18 @@ impl Shell {
     /// Whether the window may close now. With unsaved changes the user is
     /// asked, and the window closes later if they agree.
     pub fn should_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.close_approved {
+            self.close_approved = false;
+            return true;
+        }
         if !self.session.is_dirty() {
+            if self.autosave_in_flight {
+                self.request_recovery_clear();
+                self.close_after_autosave = true;
+                return false;
+            }
+            self.request_recovery_clear();
+            self.save_preferences(window);
             return true;
         }
         cx.defer_in(window, |this, window, cx| {
@@ -1346,6 +1462,225 @@ impl Shell {
         self.narrow_panel = panel;
         cx.notify();
     }
+    fn save_preferences(&mut self, window: &mut Window) {
+        let data_dir = designer_engine::identity::data_dir();
+        let mut preferences =
+            designer_engine::preferences::Preferences::load(&data_dir).preferences;
+        preferences.theme = if self.dark {
+            designer_engine::preferences::Theme::Dark
+        } else {
+            designer_engine::preferences::Theme::Light
+        };
+        preferences.timeline_open = self.timeline_open;
+        let viewport = window.viewport_size();
+        preferences.window_size = Some(designer_engine::preferences::WindowSize {
+            width: f32::from(viewport.width),
+            height: f32::from(viewport.height),
+        });
+        if let Err(error) = preferences.save(&data_dir) {
+            self.status = Some(strings::preferences_save_failed(&error).into());
+        }
+    }
+
+    fn remember_document(&mut self, path: &Path) {
+        let data_dir = designer_engine::identity::data_dir();
+        let mut preferences =
+            designer_engine::preferences::Preferences::load(&data_dir).preferences;
+        preferences.remember(path);
+        self.recent_documents.clone_from(&preferences.recent);
+        self.recent_selection = Some(0);
+        if let Err(error) = preferences.save(&data_dir) {
+            self.status = Some(strings::preferences_save_failed(&error).into());
+        }
+    }
+
+    fn clear_recovery_after_save(&mut self) {
+        self.request_recovery_clear();
+    }
+
+    fn request_recovery_clear(&mut self) {
+        if self.autosave_in_flight {
+            self.recovery_clear_pending = true;
+            return;
+        }
+        if let Err(error) = self.recovery.clear() {
+            self.status = Some(strings::recovery_failed(&error).into());
+        } else {
+            self.autosave_clock.reset();
+        }
+    }
+
+    fn autosave_recovery(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.session.is_dirty() {
+            if self.autosave_in_flight {
+                self.recovery_clear_pending = true;
+                return;
+            }
+            if self.recovery.has_snapshot() {
+                match self.recovery.clear() {
+                    Ok(()) => self.autosave_clock.reset(),
+                    Err(error) => {
+                        self.status = Some(strings::recovery_failed(&error).into());
+                    }
+                }
+            }
+            return;
+        }
+        let now = Instant::now();
+        let revision = self.session.revision();
+        if self.autosave_in_flight
+            || !self
+                .autosave_clock
+                .due(self.session.is_dirty(), revision, now)
+        {
+            return;
+        }
+        let target = match self.recovery.prepare() {
+            Ok(target) => target,
+            Err(error) => {
+                self.autosave_clock.record(None, now);
+                self.status = Some(strings::recovery_save_failed(&error).into());
+                cx.notify();
+                return;
+            }
+        };
+        let document = self.session.document().clone();
+        let original = self.session.path().map(Path::to_owned);
+        self.autosave_in_flight = true;
+        self.autosave_clock.record(Some(revision), now);
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { target.write(&document, original.as_deref()) })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                this.autosave_in_flight = false;
+                if this.recovery_clear_pending {
+                    this.recovery_clear_pending = false;
+                    if let Err(error) = this.recovery.clear() {
+                        this.status = Some(strings::recovery_failed(&error).into());
+                    } else {
+                        this.autosave_clock.reset();
+                    }
+                } else {
+                    match result {
+                        Ok(()) if !this.session.is_dirty() => {
+                            if let Err(error) = this.recovery.clear() {
+                                this.status = Some(strings::recovery_failed(&error).into());
+                            } else {
+                                this.autosave_clock.reset();
+                            }
+                        }
+                        Ok(()) => {}
+                        Err(error) => {
+                            this.autosave_clock.record(None, Instant::now());
+                            this.status = Some(strings::recovery_save_failed(&error).into());
+                        }
+                    }
+                }
+                if this.close_after_autosave {
+                    this.close_after_autosave = false;
+                    this.save_preferences(window);
+                    this.close_approved = true;
+                    window.remove_window();
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn offer_next_recovery(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(orphan) = self.recovery_queue.pop_front() else {
+            return;
+        };
+        let answer = if let Err(error) = &orphan.document {
+            window.prompt(
+                PromptLevel::Warning,
+                strings::RECOVERY_TITLE,
+                Some(&strings::recovery_invalid(error)),
+                &[strings::RECOVERY_DISCARD, strings::RECOVERY_KEEP],
+                cx,
+            )
+        } else {
+            let document_name = orphan.info.as_ref().ok().map_or_else(
+                || {
+                    orphan
+                        .document
+                        .as_ref()
+                        .expect("checked valid document")
+                        .name
+                        .clone()
+                },
+                |info| info.document_name.clone(),
+            );
+            let original_path = orphan
+                .info
+                .as_ref()
+                .ok()
+                .and_then(|info| info.original_path.as_deref());
+            window.prompt(
+                PromptLevel::Warning,
+                strings::RECOVERY_TITLE,
+                Some(&strings::recovery_detail(&document_name, original_path)),
+                &[
+                    strings::RECOVER,
+                    strings::RECOVERY_DISCARD,
+                    strings::RECOVERY_KEEP,
+                ],
+                cx,
+            )
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let answer = answer.await.ok();
+            this.update_in(cx, |this, window, cx| {
+                this.resolve_recovery_prompt(orphan, answer, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn resolve_recovery_prompt(
+        &mut self,
+        orphan: Orphan,
+        answer: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let invalid = orphan.document.is_err();
+        let mut opened_recovery = false;
+        match (invalid, answer) {
+            (false, Some(0)) => {
+                let info = orphan.info.ok();
+                let original = info.and_then(|info| info.original_path);
+                match orphan.document {
+                    Ok(document) => {
+                        let session = Session::recovered(document, original.as_deref());
+                        opened_recovery = true;
+                        match self.recovery.discard(&orphan.id) {
+                            Ok(()) => self.replace_session(session, cx),
+                            Err(error) => {
+                                self.replace_session(session, cx);
+                                self.status = Some(strings::recovery_failed(&error).into());
+                            }
+                        }
+                    }
+                    Err(error) => self.status = Some(strings::recovery_failed(&error).into()),
+                }
+            }
+            (false, Some(1)) | (true, Some(0)) => {
+                if let Err(error) = self.recovery.discard(&orphan.id) {
+                    self.status = Some(strings::recovery_failed(&error).into());
+                }
+            }
+            _ => {}
+        }
+        if !opened_recovery {
+            self.offer_next_recovery(window, cx);
+        }
+    }
+
     fn set_theme(&mut self, dark: bool, cx: &mut Context<Self>) {
         self.a11y_focus = A11yNodeId(A11Y_THEME);
         self.dark = dark;
@@ -1378,18 +1713,159 @@ impl Shell {
             self.redraw(cx);
         }
     }
-    fn toggle_timeline(&mut self, _: &ToggleTimeline, _: &mut Window, cx: &mut Context<Self>) {
+    fn move_list_selection(&mut self, movement: ListMove, cx: &mut Context<Self>) {
+        match self.screen {
+            Screen::Documents => {
+                self.recent_selection =
+                    next_list_index(self.recent_selection, self.recent_documents.len(), movement);
+                self.redraw(cx);
+            }
+            Screen::Preview => {
+                let Some(page) = self.session.document().page(self.page) else {
+                    return;
+                };
+                let states = &page.prototype.states;
+                let current = states
+                    .iter()
+                    .position(|state| state.id == self.prototype_preview.state());
+                if let Some(index) = next_list_index(current, states.len(), movement) {
+                    self.select_prototype_state(states[index].id, cx);
+                }
+            }
+            Screen::Design => {
+                let Some(page) = self.current_page() else {
+                    return;
+                };
+                if self.timeline_open
+                    && let Some(timeline_list) = self.timeline_list
+                {
+                    match timeline_list {
+                        TimelineList::Sequences => {
+                            let mut ids = Vec::new();
+                            flatten_sequence_ids(&page.animation.sequences, &mut ids);
+                            let rows = std::iter::once(None)
+                                .chain(ids.into_iter().map(Some))
+                                .collect::<Vec<_>>();
+                            let current = self.animation.active_sequence.and_then(|id| {
+                                rows.iter().position(|sequence| *sequence == Some(id))
+                            });
+                            if let Some(index) = next_list_index(current, rows.len(), movement) {
+                                let sequence = rows[index];
+                                let offset = sequence
+                                    .and_then(|id| page.animation.sequence_timing(id))
+                                    .map_or(0, |(offset, _, _)| offset);
+                                self.animation.active_sequence = sequence;
+                                self.seek_animation(offset, cx);
+                            }
+                            return;
+                        }
+                        TimelineList::Keyframes => {
+                            let offset = self
+                                .animation
+                                .active_sequence
+                                .and_then(|id| page.animation.sequence_timing(id))
+                                .map_or(0, |(offset, _, _)| offset);
+                            let track = self.selection.and_then(|node| {
+                                match self.animation.active_sequence {
+                                    Some(sequence) => {
+                                        page.animation.sequence(sequence).and_then(|sequence| {
+                                            sequence.track(node, self.animation.property)
+                                        })
+                                    }
+                                    None => page.animation.track(node, self.animation.property),
+                                }
+                            });
+                            let times = track
+                                .into_iter()
+                                .flat_map(|track| track.keys.iter())
+                                .map(|key| offset.saturating_add(key.time_ms))
+                                .collect::<Vec<_>>();
+                            let current = times
+                                .iter()
+                                .position(|time| *time == self.animation.time_ms);
+                            if let Some(index) = next_list_index(current, times.len(), movement) {
+                                self.seek_animation(times[index], cx);
+                            }
+                            return;
+                        }
+                    }
+                }
+                let mut rows = Vec::new();
+                flatten(&page.nodes, 0, &mut rows);
+                let current = self
+                    .selection
+                    .and_then(|id| rows.iter().position(|(_, node)| node.id == id));
+                if let Some(index) = next_list_index(current, rows.len(), movement) {
+                    self.selection = Some(rows[index].1.id);
+                    self.redraw(cx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn move_tab_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let screens = Screen::ALL;
+        if screens.is_empty() {
+            return;
+        }
+        let index = screens
+            .iter()
+            .position(|screen| *screen == self.screen)
+            .unwrap_or(0);
+        let next = ((index as isize + delta).rem_euclid(screens.len() as isize)) as usize;
+        self.screen = screens[next];
+        self.redraw(cx);
+    }
+
+    fn toggle_timeline(&mut self, _: &ToggleTimeline, window: &mut Window, cx: &mut Context<Self>) {
         self.a11y_focus = A11yNodeId(A11Y_TIMELINE);
         self.timeline_open = !self.timeline_open;
         if !self.timeline_open {
             self.animation.pause();
             self.animation.preview = false;
         }
+        self.save_preferences(window);
         self.redraw(cx);
     }
 
-    fn toggle_theme(&mut self, _: &ToggleTheme, _: &mut Window, cx: &mut Context<Self>) {
+    fn toggle_theme(&mut self, _: &ToggleTheme, window: &mut Window, cx: &mut Context<Self>) {
         self.set_theme(!self.dark, cx);
+        self.save_preferences(window);
+    }
+
+    fn move_selection_up(&mut self, _: &MoveSelectionUp, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_list_selection(ListMove::Delta(-1), cx);
+    }
+
+    fn move_selection_down(
+        &mut self,
+        _: &MoveSelectionDown,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_list_selection(ListMove::Delta(1), cx);
+    }
+
+    fn move_selection_home(
+        &mut self,
+        _: &MoveSelectionHome,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_list_selection(ListMove::First, cx);
+    }
+
+    fn move_selection_end(&mut self, _: &MoveSelectionEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_list_selection(ListMove::Last, cx);
+    }
+
+    fn move_tab_left(&mut self, _: &MoveTabLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_tab_selection(-1, cx);
+    }
+
+    fn move_tab_right(&mut self, _: &MoveTabRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_tab_selection(1, cx);
     }
 
     fn focus_next(&mut self, _: &FocusNext, window: &mut Window, _: &mut Context<Self>) {
@@ -1586,6 +2062,30 @@ fn tool_icon(tool: Tool) -> Icon {
 
 fn import_warning_count(report: &import::ImportReport) -> usize {
     report.warnings.len() + report.omitted_warnings
+}
+
+fn next_list_index(current: Option<usize>, len: usize, movement: ListMove) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let last = len - 1;
+    Some(match movement {
+        ListMove::First => 0,
+        ListMove::Last => last,
+        ListMove::Delta(delta) => {
+            let Some(current) = current else {
+                return Some(if delta >= 0 { 0 } else { last });
+            };
+            (current as isize + delta).clamp(0, last as isize) as usize
+        }
+    })
+}
+
+fn flatten_sequence_ids(sequences: &[Sequence], ids: &mut Vec<SequenceId>) {
+    for sequence in sequences {
+        ids.push(sequence.id);
+        flatten_sequence_ids(&sequence.children, ids);
+    }
 }
 
 fn flatten<'a>(nodes: &'a [Node], depth: usize, rows: &mut Vec<(usize, &'a Node)>) {
@@ -2120,6 +2620,29 @@ impl Shell {
             Some(path) => path.display().to_string(),
             None => strings::NOT_SAVED_YET.to_owned(),
         };
+        let recent = self
+            .recent_documents
+            .iter()
+            .enumerate()
+            .map(|(index, path)| {
+                let label = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string());
+                let path = path.clone();
+                button(
+                    ("recent-document", index),
+                    label,
+                    palette,
+                    self.recent_selection == Some(index),
+                )
+                .tooltip(tooltip(path.display().to_string(), palette))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.recent_selection = Some(index);
+                    this.open_path(&path, cx);
+                }))
+            })
+            .collect::<Vec<_>>();
         self.page_frame(Screen::Documents.label())
             .child(
                 div()
@@ -2185,7 +2708,11 @@ impl Shell {
                         })),
                     ),
             )
-            .child(muted(strings::NO_RECENT_DOCUMENTS, palette))
+            .child(muted(strings::RECENT_DOCUMENTS, palette))
+            .when(recent.is_empty(), |this| {
+                this.child(muted(strings::NO_RECENT_DOCUMENTS, palette))
+            })
+            .children(recent)
     }
 
     fn pending(&self, screen: Screen, palette: &Palette) -> Div {
@@ -2488,7 +3015,30 @@ impl Shell {
                     .child(adapter),
             )
             .child(heading(strings::AGENTS))
-            .child(muted(strings::AGENTS_PENDING, palette))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(metrics::SPACE_XS))
+                    .child(muted(strings::AGENT_PIPE, palette))
+                    .child(div().child(designer_engine::identity::session_pipe())),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(metrics::SPACE_XS))
+                    .child(muted(strings::AGENT_CONNECT, palette))
+                    .child(div().child(strings::AGENT_CONNECT_COMMAND)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(metrics::SPACE_XS))
+                    .child(muted(strings::AGENT_OPEN, palette))
+                    .child(div().child(strings::AGENT_OPEN_COMMAND)),
+            )
             .child(heading(strings::SHORTCUTS))
             .children(strings::SHORTCUT_LIST.into_iter().map(|(keys, action)| {
                 div()
@@ -2560,6 +3110,12 @@ impl Render for Shell {
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::toggle_timeline))
             .on_action(cx.listener(Self::toggle_theme))
+            .on_action(cx.listener(Self::move_selection_up))
+            .on_action(cx.listener(Self::move_selection_down))
+            .on_action(cx.listener(Self::move_selection_home))
+            .on_action(cx.listener(Self::move_selection_end))
+            .on_action(cx.listener(Self::move_tab_left))
+            .on_action(cx.listener(Self::move_tab_right))
             .on_action(cx.listener(Self::focus_next))
             .on_action(cx.listener(Self::focus_previous))
             .on_action(cx.listener(Self::undo))
@@ -2590,6 +3146,16 @@ impl Render for Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn list_navigation_clamps_and_supports_endpoints() {
+        assert_eq!(next_list_index(None, 0, ListMove::First), None);
+        assert_eq!(next_list_index(None, 4, ListMove::First), Some(0));
+        assert_eq!(next_list_index(None, 4, ListMove::Last), Some(3));
+        assert_eq!(next_list_index(Some(1), 4, ListMove::Delta(-1)), Some(0));
+        assert_eq!(next_list_index(Some(3), 4, ListMove::Delta(1)), Some(3));
+        assert_eq!(next_list_index(None, 4, ListMove::Delta(-1)), Some(3));
+    }
 
     #[test]
     fn layer_rows_list_the_topmost_layer_first_with_depth() {

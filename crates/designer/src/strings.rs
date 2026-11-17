@@ -291,12 +291,44 @@ pub const NOT_SAVED_YET: &str = "Todavía no se ha guardado en un archivo.";
 pub const NEW_DOCUMENT: &str = "Nuevo documento";
 pub const OPEN_DOCUMENT: &str = "Abrir un archivo .dsg…";
 pub const SAVE_AS: &str = "Guardar como…";
-pub const NO_RECENT_DOCUMENTS: &str =
-    "La lista de documentos recientes todavía no está disponible.";
+pub const RECENT_DOCUMENTS: &str = "Documentos recientes";
+pub const NO_RECENT_DOCUMENTS: &str = "Todavía no hay documentos recientes.";
 pub const UNSAVED_TITLE: &str = "Hay cambios sin guardar";
 pub const UNSAVED_DETAIL: &str = "Si continúas, los cambios de este documento se perderán.";
 pub const DISCARD: &str = "Descartar cambios";
 pub const KEEP_EDITING: &str = "Seguir editando";
+pub const RECOVERY_TITLE: &str = "Hay una sesión recuperable";
+pub const RECOVER: &str = "Recuperar";
+pub const RECOVERY_DISCARD: &str = "Descartar recuperación";
+pub const RECOVERY_KEEP: &str = "Dejar intacta";
+
+pub fn recovery_detail(name: &str, path: Option<&Path>) -> String {
+    match path {
+        Some(path) => format!(
+            "Se encontró una copia sin guardar de «{name}», procedente de {}.",
+            path.display()
+        ),
+        None => format!("Se encontró una copia sin guardar de «{name}»."),
+    }
+}
+
+pub fn recovery_invalid(detail: &dyn Display) -> String {
+    format!(
+        "No se pudo validar una copia de recuperación. No se borrará sin tu decisión. Detalle: {detail}"
+    )
+}
+
+pub fn recovery_failed(detail: &dyn Display) -> String {
+    format!("No se pudo completar la recuperación. Detalle: {detail}")
+}
+
+pub fn recovery_save_failed(detail: &dyn Display) -> String {
+    format!("No se pudo guardar la copia de recuperación. Detalle: {detail}")
+}
+
+pub fn preferences_save_failed(detail: &dyn Display) -> String {
+    format!("No se pudieron guardar las preferencias. Detalle: {detail}")
+}
 
 /// Status after a successful save.
 pub fn saved(path: Option<&Path>) -> String {
@@ -342,8 +374,11 @@ pub const GRAPHICS: &str = "Gráficos";
 pub const GRAPHICS_ADAPTER: &str = "Adaptador";
 pub const GRAPHICS_UNAVAILABLE: &str = "No disponible";
 pub const AGENTS: &str = "Agentes";
-pub const AGENTS_PENDING: &str =
-    "Los clientes MCP locales pueden conectarse a la sesión abierta de Designer.";
+pub const AGENT_PIPE: &str = "Pipe de la sesión abierta";
+pub const AGENT_CONNECT: &str = "Conectar al documento abierto";
+pub const AGENT_OPEN: &str = "Abrir una sesión independiente";
+pub const AGENT_CONNECT_COMMAND: &str = "designer-mcp --connect";
+pub const AGENT_OPEN_COMMAND: &str = "designer-mcp --open <archivo.dsg>";
 pub const MCP_UPDATED: &str = "El documento se actualizó desde un cliente MCP.";
 
 pub fn mcp_server_failed(error: &dyn Display) -> String {
@@ -352,7 +387,7 @@ pub fn mcp_server_failed(error: &dyn Display) -> String {
     )
 }
 pub const SHORTCUTS: &str = "Atajos";
-pub const SHORTCUT_LIST: [(&str, &str); 11] = [
+pub const SHORTCUT_LIST: [(&str, &str); 12] = [
     ("Ctrl+N", "Nuevo documento"),
     ("Ctrl+O", "Abrir un archivo .dsg"),
     ("Ctrl+S / Ctrl+Mayús+S", "Guardar / Guardar como"),
@@ -364,6 +399,7 @@ pub const SHORTCUT_LIST: [(&str, &str); 11] = [
     ("Intro o Espacio", "Activar el control enfocado"),
     ("Ctrl+T", "Mostrar u ocultar la línea de tiempo"),
     ("Ctrl+Mayús+L", "Cambiar entre tema claro y oscuro"),
+    ("Arriba/Abajo, Inicio/Fin", "Navegar por la lista activa"),
 ];
 
 /// Accessibility navigation group.

@@ -2,8 +2,9 @@
 //!
 //! A `.dsg` file is a ZIP archive with two UTF-8 JSON entries:
 //! `manifest.json` identifies the format and its schema version, and
-//! `document.json` holds the document. Sessions use OS sidecar locks. Assets and recovery
-//! snapshots are not implemented yet.
+//! `document.json` holds the document. Sessions use OS sidecar locks; recovery
+//! snapshots are stored separately under the per-user data directory. Assets
+//! are not implemented yet.
 //!
 //! A reader never publishes a document it has not validated, and a failed
 //! save leaves the previous file untouched.
@@ -232,10 +233,17 @@ fn temporary_path(path: &Path) -> PathBuf {
 /// or left as it was.
 pub fn save(document: &Document, path: &Path) -> Result<(), DsgError> {
     let bytes = to_bytes(document)?;
+    Ok(write_atomic(path, &bytes)?)
+}
+
+/// Write `bytes` to `path` through a flushed sibling temporary file that is
+/// then renamed over the destination, so readers see either the old or the
+/// new content, never a partial file.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let temporary = temporary_path(path);
     let written = (|| {
         let mut file = fs::File::create(&temporary)?;
-        file.write_all(&bytes)?;
+        file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);
         fs::rename(&temporary, path)
@@ -244,5 +252,5 @@ pub fn save(document: &Document, path: &Path) -> Result<(), DsgError> {
         // Best effort: the destination is untouched either way.
         let _ = fs::remove_file(&temporary);
     }
-    Ok(written?)
+    written
 }

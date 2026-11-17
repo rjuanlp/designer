@@ -386,7 +386,7 @@ impl ImportContext {
         if source.get("isMask").and_then(Value::as_bool) == Some(true) {
             self.warn(
                 source_path,
-                "El recorte de contenido y las máscaras no se importan.".to_owned(),
+                "Las máscaras no se importan; el recorte de contenido ya se importa.".to_owned(),
             );
         }
         if source.get("opacity").is_some() && number(source, "opacity").is_none() {
@@ -706,6 +706,7 @@ mod tests {
         node["opacity"] = serde_json::json!(1.5);
         node["layoutMode"] = Value::String("HORIZONTAL".to_owned());
         node["strokes"] = serde_json::json!([{"type": "SOLID"}]);
+        node["isMask"] = Value::Bool(true);
         node["fills"] = serde_json::json!([
             {"type": "SOLID", "color": {"r": 0.1}},
             {"type": "SOLID", "color": {"r": 0.2, "g": 0.3, "b": 0.4}}
@@ -737,6 +738,8 @@ mod tests {
             "auto-layout",
             "componentes incompletos",
             "Solo se importa",
+            "máscaras",
+            "recorte de contenido",
         ] {
             assert!(
                 result

@@ -2,18 +2,18 @@ id,surface,feature,clone,note
 F001,S00,Rust workspace,partial,Locked build and verify script pass locally on Windows/MSVC; CI not yet run
 F002,S00,Vello probe scene,partial,Offscreen and in-GPUI rendering verified on one machine; scene is a two-shape probe only
 F003,S00,GPUI texture composition,partial,Works on one NVIDIA machine via shared textures and a GPUI patch incl. translucency; DPI/device loss/hybrid GPU unvalidated
-F004,S01,DSG persistence and recovery,partial,Validated ZIP/JSON persistence and OS session sidecar locks; competing opens and Save As tested; recovery pending
+F004,S01,DSG persistence and recovery,partial,Validated ZIP/JSON persistence and OS session sidecar locks; periodic dirty-session recovery snapshots and explicit startup recovery/discard are implemented and automated-tested; GUI recovery flow not yet exercised
 F016,S02,Application shell and navigation,partial,Six sections with Spanish labels; light/dark themes; wide and narrow (below 760 px) layouts; verified by screenshots at 1440 and 390 px on one machine; 100% scale only
-F017,S02,Layers canvas and properties,partial,Editable shapes and hit testing; inspector remains read-only; no text rendering or frame clipping
-F018,S02,Keyboard navigation and focus ring,partial,AccessKit all-screen tree and focus with builder tests; root bounds only; tree and actions checked with a UI Automation client on one machine; Narrator/NVDA speech not checked; no arrow-key navigation in lists
+F017,S02,Layers canvas and properties,partial,Editable shapes, zoom/pan, clipping, and inspector fields for geometry/style/state; text rendering and path editing remain unavailable
+F018,S02,Keyboard navigation and focus ring,partial,AccessKit all-screen tree and focus with builder tests; root bounds only; Up/Down/Home/End navigate layer, recent, prototype state and selected timeline sequence/keyframe lists; Left/Right navigate sections; GUI and Narrator/NVDA behavior unvalidated
 F019,S04,Timeline panel,partial,Collapsible timeline with keyframe editing, seeking, playback, easing previews, and nested sequence controls; direct curve editing pending
-F020,S07,Preferences,partial,Theme switch and GPU adapter name; nothing is persisted; agents section is a placeholder
-F005,S02,Vector editing and history,partial,Frame rectangle ellipse creation and movement plus deletion and bounded undo/redo; pen and advanced editing pending
+F020,S07,Preferences,partial,Versioned atomic preferences persist theme, timeline visibility and window size; ten recent paths are shown in Documents; Preferences shows live pipe and MCP command forms; persistence and actions not yet GUI-tested
+F005,S02,Vector editing and history,partial,Frame rectangle ellipse creation and movement plus deletion and bounded undo/redo; atomic SetPath operation supports existing paths; pen UI conversion and strokes remain pending
 F006,S02,Typography and images,no,Planned
 F007,S02,Auto layout and constraints,no,Planned
 F008,S03,Components variants and styles,no,Planned
 F009,S04,Keyframe timeline and curves,partial,Basic keyframes and playback with preset easing curves and a visual curve preview; direct curve editing remains pending
-F010,S04,Morphing and nested sequences,partial,Nested sequences and same-topology path morph evaluation/rendering are supported in the model; path editing and morph-key authoring remain pending in the UI
+F010,S04,Morphing and nested sequences,partial,Nested sequences and same-topology path morph evaluation/rendering are supported in the model; SetPath preserves morph topology; morph-key authoring and path editing UI remain pending
 F011,S05,Interactive states,partial,Hover/click states and interruptible transitions persist and preview; wide/narrow captures and state creation/selection checked; detailed per-property editing remains pending
 F012,S06,Figma structured import,partial,Local structured JSON supports core geometry/text/solid fills with explicit loss report; binary .fig/assets/styles/layout unsupported; empty UI state captured wide/narrow
 F013,S07,MCP live and headless,partial,Revision-checked live Windows pipe and headless stdio; capability discovery and real-binary pipe tests; live read/write/conflict/save and prompt-time rejection checked against the running GUI; drag-time rejection not exercised; Windows only

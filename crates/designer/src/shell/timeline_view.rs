@@ -73,7 +73,7 @@ fn larger_duration(duration: u32, maximum: u32) -> u32 {
 }
 
 impl Shell {
-    fn seek_animation(&mut self, time: u32, cx: &mut Context<Self>) {
+    pub(super) fn seek_animation(&mut self, time: u32, cx: &mut Context<Self>) {
         let Some(page) = self.session.document().page(self.page) else {
             return;
         };
@@ -268,6 +268,7 @@ impl Shell {
                     active_sequence.is_none(),
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
+                    this.timeline_list = Some(TimelineList::Sequences);
                     this.animation.active_sequence = None;
                     this.animation.pause();
                     this.redraw(cx);
@@ -286,6 +287,7 @@ impl Shell {
                     active_sequence == Some(id),
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
+                    this.timeline_list = Some(TimelineList::Sequences);
                     this.animation.active_sequence = Some(id);
                     this.seek_animation(offset, cx);
                 }))
@@ -539,7 +541,10 @@ impl Shell {
                     palette,
                     time == local_at,
                 )
-                .on_click(cx.listener(move |this, _, _, cx| this.seek_animation(at, cx)))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.timeline_list = Some(TimelineList::Keyframes);
+                    this.seek_animation(at, cx);
+                }))
             },
         ));
         div()

@@ -6,6 +6,12 @@
   composition replacement, selection, deletion, commit and cancellation tests.
   Connect it to a GPUI input handler and editable inspector, with clipboard,
   composition, commit/cancel, validation and session undo support.
+- Add per-user preferences persistence (`<data_dir>/preferences.json`), a
+  versioned JSON schema, recent-document tracking and automatic crash recovery
+  under `<data_dir>/recovery/`, with startup recovery/discard prompts and
+  periodic snapshots for dirty documents.
+- Connect recent documents to the Documents screen and show the live MCP pipe
+  and client command forms in Preferences.
 - Add layer visibility/lock/order controls, locked-selection deletion protection,
   prototype-state property overrides and reset controls, and AccessKit SetValue.
   Graphical IME and screen-reader validation remains pending.
@@ -17,9 +23,10 @@
 - Write DSG schema 4, retaining readers for versions 1 to 3 and defaulting
   legacy frames to unclipped. Render ancestor frame clips and honor them in hits.
 - Honor Figma frame clipping and enable clipping for newly drawn frames.
-- Add screen/document transform round trips and bounded pointer-anchor zoom math.
-  Interactive zoom/pan, arrow navigation, preferences and
-  recovery remain outstanding.
+- Add screen/document transform round trips, bounded pointer-anchor zoom math,
+  interactive zoom/pan, arrow navigation across layers, recent documents,
+  prototype states and timeline sequence/keyframe rows, per-user preferences
+  and crash recovery snapshots.
 
 - Add Windows live MCP attachment with `--connect`/`--pipe`, capability discovery,
   bounded local pipe clients and drag/prompt mutation rejection.

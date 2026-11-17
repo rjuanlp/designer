@@ -21,7 +21,7 @@ Instrucciones posteriores del usuario, todas vigentes:
 | # | Paquete | Estado |
 | --- | --- | --- |
 | 1 | Editor base: identidad, operaciones nuevas, recorte de marcos, inspector editable, iconos, zoom/pan, flechas, preferencias, recuperación | **en curso** (ver abajo) |
-| 2 | Pluma, edición de trazados, claves de morph en la UI, curvas Bézier editables, trazo (`stroke`) | sin empezar |
+| 2 | Pluma, edición de trazados, claves de morph en la UI, curvas Bézier editables, trazo (`stroke`) | **en curso** |
 | 3 | Tipografía (render de texto con parley + fuentes del sistema, herramienta de texto) e imágenes (assets PNG/JPEG dentro del `.dsg`) | sin empezar |
 | 4 | Auto layout y restricciones, componentes/variantes/instancias, estilos locales, pantalla S03, cobertura MCP e importación Figma de todo ello | sin empezar |
 | 5 | **Hito 6**: benchmark de hardware, empaquetado, onboarding de forks, revisión de release | sin empezar |
@@ -43,8 +43,8 @@ Hecho y verificado con `scripts/verify.ps1` en verde (commit `31ec11f`):
 - `NodeKind::Frame { clips_content }`, recorte en render y hit-test, esquema
   `.dsg` v4 (lee v1 a v3).
 
-Hecho después (segundo commit de la rama; clippy y pruebas de `designer` en
-verde, **`scripts/verify.ps1` completo NO se ha vuelto a ejecutar**):
+Hecho después (commits `77d39d5` y `8421e94`; `scripts/verify.ps1` completo
+en verde sobre `8421e94`):
 
 - Inspector editable (`inspector.rs`, `shell/inspector_view.rs`,
   `text_field.rs`, `text_field/view.rs`): nombre, X, Y, ancho, alto, radio,
@@ -60,41 +60,79 @@ verde, **`scripts/verify.ps1` completo NO se ha vuelto a ejecutar**):
 - Zoom y desplazamiento (`canvas.rs`: `zoom_by`, `zoom_to`, `pan`, `fit`;
   `shell.rs`: Ctrl+rueda, rueda, botón central, Espacio+arrastre, Ctrl+0/1/+/-,
   controles en la barra y en el árbol de accesibilidad). Probado en la app:
-  Ctrl++ y "Alejar" cambian el porcentaje. **Sin probar**: rueda, pan, que un
-  arrastre a 200 % mueva exactamente las unidades esperadas, pantalla estrecha.
+  Ctrl++ y "Alejar" cambian el porcentaje. Exactitud probada: a 195 % un
+  arrastre de 250×125 px crea un rectángulo de 128×64 unidades. **Sin
+  probar**: Ctrl+rueda, pan con botón central y Espacio+arrastre, mover a
+  zoom distinto de 100 %, pantalla estrecha.
+- Tab confirma los campos del inspector (blur diferido con `window.defer`);
+  probado con Ancho=77 + Tab. Tras "Ajustar" la etiqueta de zoom muestra el
+  porcentaje correcto (probado: 100 %).
+
+Cambios sin commit posteriores a `8421e94`:
+
+- Preferencias versionadas en `<data_dir>/preferences.json`, con tema, estado
+  de la línea de tiempo, tamaño de ventana y recientes conectados al shell.
+  La pantalla Documentos ahora muestra los recientes; Preferencias muestra
+  el pipe de sesión y los comandos de `designer-mcp`.
+- Up/Down/Home/End navega capas, recientes, estados del prototipo y secuencias/
+  claves de timeline después de seleccionar la lista. Left/Right cambia de
+  pestaña. Falta validar estos recorridos en la GUI.
+- `RecoveryStore` está conectado a la ventana: snapshots al detectar dirty,
+  como máximo cada 30 s; limpieza al guardar, descartar/cerrar o reemplazar;
+  prompts explícitos al arrancar. La GUI todavía requiere prueba manual.
+- Aviso `isMask` corregido y documentación de build/MCP/changelog actualizada.
+- `scripts/verify.ps1` pasó tras los cambios de recuperación, preferencias,
+  recientes, agentes y navegación de listas: 141 pruebas pasaron, 3 de
+  hardware quedaron ignoradas;
+  fmt, clippy, doctests y rustdoc pasaron. La GUI necesita validación manual.
 
 Problemas abiertos conocidos:
 
-1. **Tab en un campo del inspector puede no confirmar el valor.** Enter sí
-   confirma. Se cambió `FieldView::sync` para no descartar texto pendiente,
-   pero la última prueba (escribir 77 en Ancho + Tab) no quedó concluyente
-   porque la selección había cambiado antes. Repetir la prueba con la capa
-   seleccionada y revisar `on_blur` en `text_field/view.rs`.
-2. Tras "Ajustar al contenido" la etiqueta de zoom mostraba "—"; se añadió
-   `cx.on_next_frame` en `zoom_fit` y **no se ha vuelto a comprobar**.
+1. ~~Tab no confirma~~ resuelto en `8421e94`.
+2. ~~Zoom "—" tras ajustar~~ resuelto en `8421e94`.
 3. `[ERROR] RefCell already borrowed` aparece una vez al arrancar. **Ya ocurre
    en `main`** (comprobado con un binario de `main`), no es de esta rama. Sin
    diagnosticar; sospecha: reentrada de mensajes de Windows durante el primer
    render (`set_window_title`).
-4. En `import.rs` el aviso de `isMask` aún dice "El recorte de contenido y las
-   máscaras no se importan"; el recorte ya se importa, corregir el texto.
-5. `docs/build.md` y `CHANGELOG.md` no describen todavía iconos ni zoom.
+4. El texto de `isMask` ya se corrigió para indicar que las máscaras no se
+   importan, pero el recorte de contenido sí se respeta.
+5. La documentación y el changelog se han actualizado para reflejar iconos,
+   zoom/pan, y las operaciones nuevas.
 
 Falta del paquete 1 (decisiones ya tomadas):
 
-- **Flechas**: Arriba/Abajo/Inicio/Fin en capas, documentos recientes, estados
-  y filas de la línea de tiempo; Izquierda/Derecha en pestañas.
-- **Preferencias**: `<data_dir>/preferences.json` versionado, escritura
-  atómica, tema, línea de tiempo abierta, tamaño de ventana, 10 recientes;
-  archivo corrupto vuelve a valores por defecto; sección "agentes" real con
-  el nombre del pipe y los comandos de `designer-mcp`.
-- **Recuperación**: autoguardado de sesiones sucias en
-  `<data_dir>/recovery/<id>.dsg` + sidecar JSON, máximo cada 30 s, borrado al
-  guardar o cerrar bien, aviso "Recuperar / Descartar" al arrancar, nunca
-  borrar en silencio un archivo que no valida.
+- **Flechas**: Arriba/Abajo/Inicio/Fin en documentos recientes, estados y
+  filas de la línea de tiempo. Arriba/Abajo en capas e Izquierda/Derecha en
+  pestañas ya están conectadas, pendiente validarlas en la GUI.
+- **Preferencias pendientes**: conectar la lista de documentos recientes a la
+  pantalla de Documentos y sustituir el texto temporal de Agentes por el pipe
+  y los comandos reales de `designer-mcp`.
+- **Recuperación**: el motor y la shell ya escriben snapshots periódicos de
+  sesiones sucias, limpian al guardar/cerrar/reemplazar y presentan decisiones
+  explícitas al arrancar. La GUI todavía no se ha probado; los snapshots
+  inválidos se conservan si no se elige descartarlos.
+- **Validación GUI**: probar Ctrl+rueda, pan con botón central y con
+  Espacio+arrastre, overrides de estado del inspector, layout estrecho
+  (390 px), tema claro con iconos, mover a zoom distinto de 100 %, teclas
+  muertas/IME en los campos, flechas y el flujo de recuperación.
 - Después: `scripts/verify.ps1` en verde, capturas a 1440 y 390 px en
   `replica/clone-screens/`, fila en `replica/build-log.md`, actualizar
   `features.csv`/`ROADMAP.md` con honestidad y fusionar en `main`.
+
+## Paquete 2: primer corte
+
+- `Operation::SetPath` reemplaza la geometría normalizada de un nodo Path sin
+  cambiar sus bounds. La validación transaccional conserva la atomicidad,
+  rechaza otros tipos de nodo y evita cambios de topología incompatibles con
+  claves morph existentes. El discriminador aparece en la lista de capacidades
+  usada por MCP.
+- `cargo test --locked -p designer-core`: 27 pruebas pasaron.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify.ps1`:
+  pasó; 142 pruebas, 3 pruebas GPU ignoradas por requerir hardware; fmt,
+  clippy, doctests y rustdoc pasaron.
+- Sigue pendiente: herramienta pluma y edición en canvas, conversión de formas,
+  `Node.stroke` y renderizado de trazos, autoría UI de claves morph y edición
+  directa de curvas Bézier. No se ha hecho validación GUI de este paquete.
 
 ## Decisiones de diseño para los paquetes siguientes
 
