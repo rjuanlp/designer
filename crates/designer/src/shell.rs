@@ -921,11 +921,11 @@ impl Shell {
         self.zoom_canvas(1.0 / ZOOM_STEP, cx);
     }
 
-    fn zoom_fit(&mut self, _: &ZoomFit, window: &mut Window, cx: &mut Context<Self>) {
-        self.canvas.borrow_mut().fit();
+    fn zoom_fit(&mut self, _: &ZoomFit, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(page) = self.current_page().cloned() {
+            self.canvas.borrow_mut().fit(&page);
+        }
         cx.notify();
-        // The new zoom is known only after the next frame is painted.
-        cx.on_next_frame(window, |_, _, cx| cx.notify());
     }
 
     fn zoom_reset(&mut self, _: &ZoomReset, _: &mut Window, cx: &mut Context<Self>) {

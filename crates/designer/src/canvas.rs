@@ -164,9 +164,14 @@ impl CanvasHost {
         self.set_view(epoch, page, view, before)
     }
 
-    /// Fit the page content in the canvas again on the next frame.
-    pub fn fit(&mut self) {
-        self.view = None;
+    /// Fit the page content in the canvas. Before the first frame there is
+    /// no canvas size yet and the first frame fits by itself.
+    pub fn fit(&mut self, page: &Page) {
+        let (Some(placement), Some((epoch, _, _))) = (self.placement, self.view) else {
+            return;
+        };
+        let view = fitted_view(page, placement.width, placement.height);
+        self.view = Some((epoch, page.id, view));
         self.view_revision += 1;
     }
 
@@ -273,21 +278,7 @@ impl CanvasHost {
         let view = match self.view {
             Some((epoch, id, view)) if epoch == view_epoch && id == page.id => view,
             _ => {
-                let view = content_bounds(page)
-                    .map(|bounds| {
-                        fit_view(
-                            bounds,
-                            f64::from(width),
-                            f64::from(height),
-                            metrics::CANVAS_MARGIN,
-                        )
-                    })
-                    // An empty page starts with its origin inside the margin.
-                    .unwrap_or(ViewTransform {
-                        scale: 1.0,
-                        offset_x: metrics::CANVAS_MARGIN,
-                        offset_y: metrics::CANVAS_MARGIN,
-                    });
+                let view = fitted_view(page, width, height);
                 self.view = Some((view_epoch, page.id, view));
                 view
             }
@@ -355,4 +346,24 @@ async fn create_gpu() -> Result<Gpu> {
         renderer,
         adapter: info.name,
     })
+}
+
+/// The view that shows all the content of a page in a canvas of a physical
+/// size.
+fn fitted_view(page: &Page, width: u32, height: u32) -> ViewTransform {
+    content_bounds(page)
+        .map(|bounds| {
+            fit_view(
+                bounds,
+                f64::from(width),
+                f64::from(height),
+                metrics::CANVAS_MARGIN,
+            )
+        })
+        // An empty page starts with its origin inside the margin.
+        .unwrap_or(ViewTransform {
+            scale: 1.0,
+            offset_x: metrics::CANVAS_MARGIN,
+            offset_y: metrics::CANVAS_MARGIN,
+        })
 }

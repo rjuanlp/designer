@@ -24,8 +24,15 @@ impl FieldView {
         commit: impl Fn(String, &mut Window, &mut App) -> String + 'static,
     ) -> Self {
         let focus = cx.focus_handle();
-        cx.on_blur(&focus, window, |this, window, cx| this.accept(window, cx))
-            .detach();
+        // Commit after the frame that reports the blur: a change notified
+        // while the window is drawing is not painted until the next event.
+        cx.on_blur(&focus, window, |_, window, cx| {
+            let field = cx.entity();
+            window.defer(cx, move |window, cx| {
+                field.update(cx, |this, cx| this.accept(window, cx));
+            });
+        })
+        .detach();
         Self {
             focus,
             state: EditState::new(value),
