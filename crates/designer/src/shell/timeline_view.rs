@@ -259,7 +259,19 @@ impl Shell {
             && page.animation.next_sequence_id().is_some();
         let mut sequence_rows = Vec::new();
         append_sequence_rows(&page.animation.sequences, 0, &mut sequence_rows);
-        let sequence_controls = row()
+        let sequence_items = std::iter::once(FocusItem::Sequence(None))
+            .chain(
+                sequence_rows
+                    .iter()
+                    .map(|(id, _, _)| FocusItem::Sequence(Some(*id))),
+            )
+            .collect();
+        let sequence_controls = self
+            .vertical_list(sequence_items, cx)
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(metrics::SPACE_XS))
             .child(
                 button(
                     ("sequence-select", 0_u64),
@@ -267,18 +279,10 @@ impl Shell {
                     palette,
                     active_sequence.is_none(),
                 )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.timeline_list = Some(TimelineList::Sequences);
-                    this.animation.active_sequence = None;
-                    this.animation.pause();
-                    this.redraw(cx);
-                })),
+                .track_focus(&self.item_handle(FocusItem::Sequence(None), cx))
+                .on_click(cx.listener(|this, _, _, cx| this.select_sequence(None, cx))),
             )
             .children(sequence_rows.into_iter().map(|(id, name, depth)| {
-                let offset = page
-                    .animation
-                    .sequence_timing(id)
-                    .map_or(0, |(offset, _, _)| offset);
                 let label = format!("{}{}", "· ".repeat(depth + 1), name);
                 button(
                     ("sequence-select", id.0),
@@ -286,11 +290,8 @@ impl Shell {
                     palette,
                     active_sequence == Some(id),
                 )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.timeline_list = Some(TimelineList::Sequences);
-                    this.animation.active_sequence = Some(id);
-                    this.seek_animation(offset, cx);
-                }))
+                .track_focus(&self.item_handle(FocusItem::Sequence(Some(id)), cx))
+                .on_click(cx.listener(move |this, _, _, cx| this.select_sequence(Some(id), cx)))
             }))
             .child(command(
                 "sequence-add",
@@ -531,22 +532,36 @@ impl Shell {
                     }
                 }),
             ));
-        let keys = row().children(track.into_iter().flat_map(|track| track.keys.iter()).map(
-            |key| {
-                let local_at = key.time_ms;
-                let at = sequence_offset.saturating_add(local_at);
-                button(
-                    ("key-at", local_at),
-                    strings::key_label(local_at, key.value),
-                    palette,
-                    time == local_at,
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.timeline_list = Some(TimelineList::Keyframes);
-                    this.seek_animation(at, cx);
-                }))
-            },
-        ));
+        let key_items = track
+            .into_iter()
+            .flat_map(|track| track.keys.iter())
+            .map(|key| FocusItem::Keyframe(sequence_offset.saturating_add(key.time_ms)))
+            .collect();
+        let keys = self
+            .vertical_list(key_items, cx)
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(metrics::SPACE_XS))
+            .children(
+                track
+                    .into_iter()
+                    .flat_map(|track| track.keys.iter())
+                    .map(|key| {
+                        let local_at = key.time_ms;
+                        let at = sequence_offset.saturating_add(local_at);
+                        button(
+                            ("key-at", local_at),
+                            strings::key_label(local_at, key.value),
+                            palette,
+                            time == local_at,
+                        )
+                        .track_focus(&self.item_handle(FocusItem::Keyframe(at), cx))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.seek_animation(at, cx);
+                        }))
+                    }),
+            );
         div()
             .id("timeline-editor")
             .flex_1()

@@ -5,7 +5,7 @@ mod timeline_view;
 
 use std::{
     cell::RefCell,
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
     rc::Rc,
     time::{Duration, Instant},
@@ -17,8 +17,8 @@ use accesskit::{Rect as A11yRect, TreeUpdate};
 use designer_core::{
     Color, DEFAULT_PROTOTYPE_DURATION_MS, Document, Easing, FillOverride, INITIAL_STATE,
     MAX_PROTOTYPE_STATES, Node, NodeId, NodeKind, NodeOverride, Operation, Page, PageId,
-    PrototypeState, PrototypeStateId, PrototypeTransition, PrototypeTrigger, Rect, Sequence,
-    SequenceId, sample_document,
+    PrototypeState, PrototypeStateId, PrototypeTransition, PrototypeTrigger, Rect, SequenceId,
+    sample_document,
 };
 use designer_engine::{
     Session,
@@ -150,10 +150,15 @@ enum ListMove {
     Last,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum TimelineList {
-    Sequences,
-    Keyframes,
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum FocusItem {
+    Layer(NodeId),
+    Recent(usize),
+    State(PrototypeStateId),
+    Sequence(Option<SequenceId>),
+    Keyframe(u32),
+    Section(usize),
+    Panel(usize),
 }
 
 /// The rectangle between two points, snapped to whole document units.
@@ -267,7 +272,8 @@ pub struct Shell {
     pending_import: Option<ImportResult>,
     recent_documents: Vec<PathBuf>,
     recent_selection: Option<usize>,
-    timeline_list: Option<TimelineList>,
+    item_focus: RefCell<HashMap<FocusItem, FocusHandle>>,
+    layers_scroll: gpui::ScrollHandle,
     recovery: RecoveryStore,
     recovery_queue: VecDeque<Orphan>,
     autosave_clock: AutosaveClock,
@@ -305,7 +311,10 @@ impl Shell {
             preferences.preferences.theme != designer_engine::preferences::Theme::Light
         };
         let timeline_open = options.timeline || preferences.preferences.timeline_open;
-        let mut status = None;
+        let mut status = preferences
+            .problem
+            .as_ref()
+            .map(|error| strings::preferences_load_failed(error).into());
         let session = match &options.open {
             Some(path) => Session::open(path).unwrap_or_else(|error| {
                 status = Some(strings::open_failed(path, &error).into());
@@ -384,7 +393,8 @@ impl Shell {
             pending_import: None,
             recent_documents: preferences.preferences.recent.clone(),
             recent_selection: None,
-            timeline_list: None,
+            item_focus: RefCell::new(HashMap::new()),
+            layers_scroll: gpui::ScrollHandle::new(),
             recovery,
             recovery_queue,
             autosave_clock: AutosaveClock::default(),
@@ -471,6 +481,7 @@ impl Shell {
     fn replace_session(&mut self, session: Session, cx: &mut Context<Self>) {
         self.request_recovery_clear();
         self.fields.clear();
+        self.item_focus.borrow_mut().clear();
         self.field_target = None;
         self.animation = crate::timeline::Timeline::default();
         self.page = session
@@ -1472,7 +1483,7 @@ impl Shell {
             designer_engine::preferences::Theme::Light
         };
         preferences.timeline_open = self.timeline_open;
-        let viewport = window.viewport_size();
+        let viewport = window.window_bounds().get_bounds().size;
         preferences.window_size = Some(designer_engine::preferences::WindowSize {
             width: f32::from(viewport.width),
             height: f32::from(viewport.height),
@@ -1658,11 +1669,24 @@ impl Shell {
                     Ok(document) => {
                         let session = Session::recovered(document, original.as_deref());
                         opened_recovery = true;
-                        match self.recovery.discard(&orphan.id) {
-                            Ok(()) => self.replace_session(session, cx),
+                        self.replace_session(session, cx);
+                        let result = self
+                            .recovery
+                            .prepare()
+                            .map_err(designer_engine::DsgError::from)
+                            .and_then(|target| {
+                                target.write(self.session.document(), self.session.path())
+                            });
+                        match result {
+                            Ok(()) => {
+                                self.autosave_clock
+                                    .record(Some(self.session.revision()), Instant::now());
+                                if let Err(error) = self.recovery.discard(&orphan.id) {
+                                    self.status = Some(strings::recovery_failed(&error).into());
+                                }
+                            }
                             Err(error) => {
-                                self.replace_session(session, cx);
-                                self.status = Some(strings::recovery_failed(&error).into());
+                                self.status = Some(strings::recovery_save_failed(&error).into());
                             }
                         }
                     }
@@ -1713,109 +1737,99 @@ impl Shell {
             self.redraw(cx);
         }
     }
-    fn move_list_selection(&mut self, movement: ListMove, cx: &mut Context<Self>) {
-        match self.screen {
-            Screen::Documents => {
-                self.recent_selection =
-                    next_list_index(self.recent_selection, self.recent_documents.len(), movement);
-                self.redraw(cx);
+    fn item_handle(&self, item: FocusItem, cx: &mut Context<Self>) -> FocusHandle {
+        self.item_focus
+            .borrow_mut()
+            .entry(item)
+            .or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone()
+    }
+
+    fn move_focus(
+        &mut self,
+        items: &[FocusItem],
+        movement: ListMove,
+        wrap: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current = items.iter().position(|item| {
+            self.item_focus
+                .borrow()
+                .get(item)
+                .is_some_and(|handle| handle.contains_focused(window, cx))
+        });
+        let next = if wrap {
+            let ListMove::Delta(delta) = movement else {
+                return;
+            };
+            next_tab_index(current, items.len(), delta)
+        } else {
+            next_list_index(current, items.len(), movement)
+        };
+        let Some(index) = next else { return };
+        let item = items[index];
+        match item {
+            FocusItem::Layer(id) => {
+                self.select_layer(id, cx);
+                self.layers_scroll.scroll_to_item(index);
             }
-            Screen::Preview => {
-                let Some(page) = self.session.document().page(self.page) else {
-                    return;
-                };
-                let states = &page.prototype.states;
-                let current = states
-                    .iter()
-                    .position(|state| state.id == self.prototype_preview.state());
-                if let Some(index) = next_list_index(current, states.len(), movement) {
-                    self.select_prototype_state(states[index].id, cx);
-                }
-            }
-            Screen::Design => {
-                let Some(page) = self.current_page() else {
-                    return;
-                };
-                if self.timeline_open
-                    && let Some(timeline_list) = self.timeline_list
-                {
-                    match timeline_list {
-                        TimelineList::Sequences => {
-                            let mut ids = Vec::new();
-                            flatten_sequence_ids(&page.animation.sequences, &mut ids);
-                            let rows = std::iter::once(None)
-                                .chain(ids.into_iter().map(Some))
-                                .collect::<Vec<_>>();
-                            let current = self.animation.active_sequence.and_then(|id| {
-                                rows.iter().position(|sequence| *sequence == Some(id))
-                            });
-                            if let Some(index) = next_list_index(current, rows.len(), movement) {
-                                let sequence = rows[index];
-                                let offset = sequence
-                                    .and_then(|id| page.animation.sequence_timing(id))
-                                    .map_or(0, |(offset, _, _)| offset);
-                                self.animation.active_sequence = sequence;
-                                self.seek_animation(offset, cx);
-                            }
-                            return;
-                        }
-                        TimelineList::Keyframes => {
-                            let offset = self
-                                .animation
-                                .active_sequence
-                                .and_then(|id| page.animation.sequence_timing(id))
-                                .map_or(0, |(offset, _, _)| offset);
-                            let track = self.selection.and_then(|node| {
-                                match self.animation.active_sequence {
-                                    Some(sequence) => {
-                                        page.animation.sequence(sequence).and_then(|sequence| {
-                                            sequence.track(node, self.animation.property)
-                                        })
-                                    }
-                                    None => page.animation.track(node, self.animation.property),
-                                }
-                            });
-                            let times = track
-                                .into_iter()
-                                .flat_map(|track| track.keys.iter())
-                                .map(|key| offset.saturating_add(key.time_ms))
-                                .collect::<Vec<_>>();
-                            let current = times
-                                .iter()
-                                .position(|time| *time == self.animation.time_ms);
-                            if let Some(index) = next_list_index(current, times.len(), movement) {
-                                self.seek_animation(times[index], cx);
-                            }
-                            return;
-                        }
-                    }
-                }
-                let mut rows = Vec::new();
-                flatten(&page.nodes, 0, &mut rows);
-                let current = self
-                    .selection
-                    .and_then(|id| rows.iter().position(|(_, node)| node.id == id));
-                if let Some(index) = next_list_index(current, rows.len(), movement) {
-                    self.selection = Some(rows[index].1.id);
-                    self.redraw(cx);
-                }
-            }
-            _ => {}
+            FocusItem::Recent(_) => {}
+            FocusItem::State(id) => self.select_prototype_state(id, cx),
+            FocusItem::Sequence(sequence) => self.select_sequence(sequence, cx),
+            FocusItem::Keyframe(time) => self.seek_animation(time, cx),
+            FocusItem::Section(index) => self.select_screen(Screen::ALL[index], cx),
+            FocusItem::Panel(index) => self.select_panel(NarrowPanel::ALL[index], cx),
+        }
+        window.focus(&self.item_handle(item, cx));
+        cx.notify();
+    }
+
+    fn select_sequence(&mut self, sequence: Option<SequenceId>, cx: &mut Context<Self>) {
+        self.animation.active_sequence = sequence;
+        if let Some(id) = sequence {
+            let offset = self
+                .current_page()
+                .and_then(|page| page.animation.sequence_timing(id))
+                .map_or(0, |(offset, _, _)| offset);
+            self.seek_animation(offset, cx);
+        } else {
+            self.animation.pause();
+            self.redraw(cx);
         }
     }
 
-    fn move_tab_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let screens = Screen::ALL;
-        if screens.is_empty() {
-            return;
-        }
-        let index = screens
-            .iter()
-            .position(|screen| *screen == self.screen)
-            .unwrap_or(0);
-        let next = ((index as isize + delta).rem_euclid(screens.len() as isize)) as usize;
-        self.screen = screens[next];
-        self.redraw(cx);
+    fn vertical_list(&self, items: Vec<FocusItem>, cx: &mut Context<Self>) -> Div {
+        let items = Rc::new(items);
+        let up = items.clone();
+        let down = items.clone();
+        let home = items.clone();
+        div()
+            .key_context("VerticalList")
+            .on_action(cx.listener(move |this, _: &MoveSelectionUp, window, cx| {
+                this.move_focus(&up, ListMove::Delta(-1), false, window, cx)
+            }))
+            .on_action(cx.listener(move |this, _: &MoveSelectionDown, window, cx| {
+                this.move_focus(&down, ListMove::Delta(1), false, window, cx)
+            }))
+            .on_action(cx.listener(move |this, _: &MoveSelectionHome, window, cx| {
+                this.move_focus(&home, ListMove::First, false, window, cx)
+            }))
+            .on_action(cx.listener(move |this, _: &MoveSelectionEnd, window, cx| {
+                this.move_focus(&items, ListMove::Last, false, window, cx)
+            }))
+    }
+
+    fn tab_list(&self, items: Vec<FocusItem>, cx: &mut Context<Self>) -> Div {
+        let left = items.clone();
+        div()
+            .key_context("TabList")
+            .on_action(cx.listener(move |this, _: &MoveTabLeft, window, cx| {
+                this.move_focus(&left, ListMove::Delta(-1), true, window, cx)
+            }))
+            .on_action(cx.listener(move |this, _: &MoveTabRight, window, cx| {
+                this.move_focus(&items, ListMove::Delta(1), true, window, cx)
+            }))
     }
 
     fn toggle_timeline(&mut self, _: &ToggleTimeline, window: &mut Window, cx: &mut Context<Self>) {
@@ -1832,40 +1846,6 @@ impl Shell {
     fn toggle_theme(&mut self, _: &ToggleTheme, window: &mut Window, cx: &mut Context<Self>) {
         self.set_theme(!self.dark, cx);
         self.save_preferences(window);
-    }
-
-    fn move_selection_up(&mut self, _: &MoveSelectionUp, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_list_selection(ListMove::Delta(-1), cx);
-    }
-
-    fn move_selection_down(
-        &mut self,
-        _: &MoveSelectionDown,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.move_list_selection(ListMove::Delta(1), cx);
-    }
-
-    fn move_selection_home(
-        &mut self,
-        _: &MoveSelectionHome,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.move_list_selection(ListMove::First, cx);
-    }
-
-    fn move_selection_end(&mut self, _: &MoveSelectionEnd, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_list_selection(ListMove::Last, cx);
-    }
-
-    fn move_tab_left(&mut self, _: &MoveTabLeft, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_tab_selection(-1, cx);
-    }
-
-    fn move_tab_right(&mut self, _: &MoveTabRight, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_tab_selection(1, cx);
     }
 
     fn focus_next(&mut self, _: &FocusNext, window: &mut Window, _: &mut Context<Self>) {
@@ -2081,11 +2061,11 @@ fn next_list_index(current: Option<usize>, len: usize, movement: ListMove) -> Op
     })
 }
 
-fn flatten_sequence_ids(sequences: &[Sequence], ids: &mut Vec<SequenceId>) {
-    for sequence in sequences {
-        ids.push(sequence.id);
-        flatten_sequence_ids(&sequence.children, ids);
+fn next_tab_index(current: Option<usize>, len: usize, delta: isize) -> Option<usize> {
+    if len == 0 {
+        return None;
     }
+    Some((current.unwrap_or(0) as isize + delta).rem_euclid(len as isize) as usize)
 }
 
 fn flatten<'a>(nodes: &'a [Node], depth: usize, rows: &mut Vec<(usize, &'a Node)>) {
@@ -2115,7 +2095,7 @@ fn to_external(frame: SharedFrame) -> ExternalTexture {
 
 impl Shell {
     fn navigation(&self, palette: &Palette, cx: &mut Context<Self>) -> Div {
-        div()
+        self.tab_list((0..Screen::ALL.len()).map(FocusItem::Section).collect(), cx)
             .flex()
             .flex_none()
             .flex_wrap()
@@ -2134,6 +2114,7 @@ impl Shell {
                     palette,
                     self.screen == screen,
                 )
+                .track_focus(&self.item_handle(FocusItem::Section(index), cx))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.select_screen(screen, cx);
                 }))
@@ -2297,6 +2278,10 @@ impl Shell {
         if let Some(page) = self.current_page() {
             flatten(&page.nodes, 0, &mut rows);
         }
+        let layer_items = rows
+            .iter()
+            .map(|(_, node)| FocusItem::Layer(node.id))
+            .collect();
         let layers: Vec<AnyElement> = if rows.is_empty() {
             vec![
                 muted(strings::NO_LAYERS, palette)
@@ -2327,8 +2312,9 @@ impl Shell {
                     .child(self.layer_order_controls(palette, cx)),
             )
             .child(
-                div()
+                self.vertical_list(layer_items, cx)
                     .id("layers-scroll")
+                    .track_scroll(&self.layers_scroll)
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
@@ -2346,6 +2332,7 @@ impl Shell {
         let id = node.id;
         let selected = self.shown_selection() == Some(id);
         control(("layer", id.0), palette, selected)
+            .track_focus(&self.item_handle(FocusItem::Layer(id), cx))
             .mx(px(metrics::SPACE_XS))
             .gap(px(metrics::SPACE_XS))
             .pl(px(metrics::SPACE_S + metrics::INDENT * depth as f32))
@@ -2523,39 +2510,43 @@ impl Shell {
     }
 
     fn workspace(&self, mode: LayoutMode, palette: &Palette, cx: &mut Context<Self>) -> Div {
-        let body = match mode {
-            LayoutMode::Wide => div()
-                .flex()
-                .flex_1()
-                .min_h_0()
-                .child(
-                    div()
-                        .flex_none()
-                        .w(px(metrics::LAYERS_WIDTH))
-                        .h_full()
-                        .border_r_1()
-                        .border_color(rgb(palette.border))
-                        .child(self.layers_panel(palette, cx)),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .h_full()
-                        .child(self.canvas_panel(palette, cx)),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .w(px(metrics::INSPECTOR_WIDTH))
-                        .h_full()
-                        .border_l_1()
-                        .border_color(rgb(palette.border))
-                        .child(self.inspector(palette, cx)),
-                ),
-            LayoutMode::Narrow => {
-                let switcher =
-                    div()
+        let body =
+            match mode {
+                LayoutMode::Wide => div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(metrics::LAYERS_WIDTH))
+                            .h_full()
+                            .border_r_1()
+                            .border_color(rgb(palette.border))
+                            .child(self.layers_panel(palette, cx)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(self.canvas_panel(palette, cx)),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(metrics::INSPECTOR_WIDTH))
+                            .h_full()
+                            .border_l_1()
+                            .border_color(rgb(palette.border))
+                            .child(self.inspector(palette, cx)),
+                    ),
+                LayoutMode::Narrow => {
+                    let switcher = self
+                        .tab_list(
+                            (0..NarrowPanel::ALL.len()).map(FocusItem::Panel).collect(),
+                            cx,
+                        )
                         .flex()
                         .flex_none()
                         .gap(px(metrics::SPACE_XS))
@@ -2572,6 +2563,7 @@ impl Shell {
                                     palette,
                                     self.narrow_panel == panel,
                                 )
+                                .track_focus(&self.item_handle(FocusItem::Panel(index), cx))
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
                                         this.select_panel(panel, cx);
@@ -2579,20 +2571,20 @@ impl Shell {
                                 ))
                             },
                         ));
-                let panel = match self.narrow_panel {
-                    NarrowPanel::Layers => self.layers_panel(palette, cx),
-                    NarrowPanel::Canvas => self.canvas_panel(palette, cx),
-                    NarrowPanel::Inspector => self.inspector(palette, cx),
-                };
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_h_0()
-                    .child(switcher)
-                    .child(div().flex_1().min_h_0().child(panel))
-            }
-        };
+                    let panel = match self.narrow_panel {
+                        NarrowPanel::Layers => self.layers_panel(palette, cx),
+                        NarrowPanel::Canvas => self.canvas_panel(palette, cx),
+                        NarrowPanel::Inspector => self.inspector(palette, cx),
+                    };
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_h_0()
+                        .child(switcher)
+                        .child(div().flex_1().min_h_0().child(panel))
+                }
+            };
         div()
             .flex()
             .flex_col()
@@ -2636,6 +2628,7 @@ impl Shell {
                     palette,
                     self.recent_selection == Some(index),
                 )
+                .track_focus(&self.item_handle(FocusItem::Recent(index), cx))
                 .tooltip(tooltip(path.display().to_string(), palette))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.recent_selection = Some(index);
@@ -2712,7 +2705,17 @@ impl Shell {
             .when(recent.is_empty(), |this| {
                 this.child(muted(strings::NO_RECENT_DOCUMENTS, palette))
             })
-            .children(recent)
+            .child(
+                self.vertical_list(
+                    (0..self.recent_documents.len())
+                        .map(FocusItem::Recent)
+                        .collect(),
+                    cx,
+                )
+                .flex()
+                .flex_col()
+                .children(recent),
+            )
     }
 
     fn pending(&self, screen: Screen, palette: &Palette) -> Div {
@@ -2841,10 +2844,12 @@ impl Shell {
                     palette,
                     self.prototype_preview.state() == id,
                 )
+                .track_focus(&self.item_handle(FocusItem::State(id), cx))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.select_prototype_state(id, cx);
                 }))
-            });
+            })
+            .collect::<Vec<_>>();
         let selected = self
             .selection
             .and_then(|id| page.node(id))
@@ -2919,11 +2924,18 @@ impl Shell {
             })
             .child(div().child(strings::PROTOTYPE_STATES))
             .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(px(metrics::SPACE_XS))
-                    .children(state_rows),
+                self.vertical_list(
+                    page.prototype
+                        .states
+                        .iter()
+                        .map(|state| FocusItem::State(state.id))
+                        .collect(),
+                    cx,
+                )
+                .flex()
+                .flex_wrap()
+                .gap(px(metrics::SPACE_XS))
+                .children(state_rows),
             )
             .child(remove_state)
             .child(div().child(strings::SELECTED_LAYER))
@@ -3110,12 +3122,6 @@ impl Render for Shell {
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::toggle_timeline))
             .on_action(cx.listener(Self::toggle_theme))
-            .on_action(cx.listener(Self::move_selection_up))
-            .on_action(cx.listener(Self::move_selection_down))
-            .on_action(cx.listener(Self::move_selection_home))
-            .on_action(cx.listener(Self::move_selection_end))
-            .on_action(cx.listener(Self::move_tab_left))
-            .on_action(cx.listener(Self::move_tab_right))
             .on_action(cx.listener(Self::focus_next))
             .on_action(cx.listener(Self::focus_previous))
             .on_action(cx.listener(Self::undo))
@@ -3146,6 +3152,15 @@ impl Render for Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tabs_wrap_in_both_directions() {
+        assert_eq!(next_tab_index(Some(0), 0, 1), None);
+        assert_eq!(next_tab_index(Some(0), 1, -1), Some(0));
+        assert_eq!(next_tab_index(Some(0), 4, -1), Some(3));
+        assert_eq!(next_tab_index(Some(3), 4, 1), Some(0));
+        assert_eq!(next_tab_index(Some(1), 4, 1), Some(2));
+    }
 
     #[test]
     fn list_navigation_clamps_and_supports_endpoints() {

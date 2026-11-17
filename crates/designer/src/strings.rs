@@ -387,7 +387,20 @@ pub fn mcp_server_failed(error: &dyn Display) -> String {
     )
 }
 pub const SHORTCUTS: &str = "Atajos";
-pub const SHORTCUT_LIST: [(&str, &str); 12] = [
+
+pub fn preferences_load_failed(error: &impl std::fmt::Display) -> String {
+    format!(
+        "No se pudieron leer las preferencias guardadas; se usan los valores predeterminados. Detalle: {error}"
+    )
+}
+
+pub const SHORTCUT_LIST: [(&str, &str); 18] = [
+    ("Izquierda/Derecha", "Navegar por las secciones"),
+    ("Ctrl++ / Ctrl+-", "Acercar / Alejar"),
+    ("Ctrl+0", "Ajustar al contenido"),
+    ("Ctrl+1", "Zoom al 100 %"),
+    ("Ctrl+rueda", "Cambiar el zoom"),
+    ("Botón central o Espacio+arrastre", "Desplazar el lienzo"),
     ("Ctrl+N", "Nuevo documento"),
     ("Ctrl+O", "Abrir un archivo .dsg"),
     ("Ctrl+S / Ctrl+Mayús+S", "Guardar / Guardar como"),
