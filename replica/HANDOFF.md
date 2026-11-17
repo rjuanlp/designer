@@ -20,7 +20,7 @@ Instrucciones posteriores del usuario, todas vigentes:
 
 | # | Paquete | Estado |
 | --- | --- | --- |
-| 1 | Editor base: identidad, operaciones nuevas, recorte de marcos, inspector editable, iconos, zoom/pan, flechas, preferencias, recuperación | **en curso** (ver abajo) |
+| 1 | Editor base: identidad, operaciones nuevas, recorte de marcos, inspector editable, iconos, zoom/pan, flechas, preferencias, recuperación | **hecho** (fusionado; ver abajo) |
 | 2 | Pluma, edición de trazados, claves de morph en la UI, curvas Bézier editables, trazo (`stroke`) | **en curso** |
 | 3 | Tipografía (render de texto con parley + fuentes del sistema, herramienta de texto) e imágenes (assets PNG/JPEG dentro del `.dsg`) | sin empezar |
 | 4 | Auto layout y restricciones, componentes/variantes/instancias, estilos locales, pantalla S03, cobertura MCP e importación Figma de todo ello | sin empezar |
@@ -97,20 +97,18 @@ Problemas abiertos conocidos:
 1. `[ERROR] RefCell already borrowed` al arrancar (ya en `main`). Además, el
    primer fotograma queda vacío hasta el primer evento de entrada;
    probablemente es la misma causa.
-2. Un clic simulado en la X de la barra de título no cerró la ventana;
-   `WM_CLOSE` sí mostró el aviso y cerró bien. Comprobar con un clic real.
+2. ~~Clic en la X~~: el usuario lo probó con un clic real y funciona; el
+   fallo era de la entrada simulada.
 3. En el layout estrecho la etiqueta de zoom muestra "—".
-4. Necesitan prueba con teclado y ratón reales (la entrada simulada no es
-   concluyente): Ctrl+rueda y Ctrl+= no hicieron zoom (la barra sí; Ctrl+T,
-   Ctrl+S y Ctrl+Mayús+L sí funcionan, así que se sospecha del modificador
-   inyectado o de la tecla `=` en la distribución latinoamericana); la tilde
-   muerta + `a` dio `a` sin acento; pan con botón central y Espacio+arrastre
-   no se pueden simular.
+4. ~~Entrada real~~: el usuario probó con teclado latinoamericano y ratón
+   reales Ctrl+rueda, Ctrl+= / Ctrl+- / Ctrl+0 / Ctrl+1, pan con botón
+   central y con Espacio+arrastre, tildes muertas y ñ en los campos. Todo
+   funciona.
 5. ~~Atajos sin respuesta tras cerrar la línea de tiempo con el foco dentro~~:
    resuelto devolviendo el foco al shell al ocultarla; probado (clic en
    1000 ms, Ctrl+T, Ctrl+Mayús+L cambia el tema sin otro clic).
 
-Falta del paquete 1: prueba manual del punto 4 y fusionar en `main`.
+Paquete 1 terminado y fusionado en `main`. Quedan abiertos los puntos 1 y 3.
 
 ## Paquete 2: primer corte
 
