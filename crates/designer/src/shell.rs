@@ -418,7 +418,8 @@ impl Shell {
         };
         cx.spawn_in(window, async move |this, cx| {
             loop {
-                tokio::time::sleep(AUTOSAVE_POLL_INTERVAL).await;
+                // GPUI's executor has no Tokio runtime; use its own timer.
+                cx.background_executor().timer(AUTOSAVE_POLL_INTERVAL).await;
                 if this
                     .update_in(cx, |this, window, cx| this.autosave_recovery(window, cx))
                     .is_err()

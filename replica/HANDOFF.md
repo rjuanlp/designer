@@ -68,56 +68,42 @@ en verde sobre `8421e94`):
   probado con Ancho=77 + Tab. Tras "Ajustar" la etiqueta de zoom muestra el
   porcentaje correcto (probado: 100 %).
 
-Cambios sin commit posteriores a `8421e94`:
+Commits posteriores (`4c7bcfe`, `5613885` y el arreglo del temporizador):
 
-- Preferencias versionadas en `<data_dir>/preferences.json`, con tema, estado
-  de la línea de tiempo, tamaño de ventana y recientes conectados al shell.
-  La pantalla Documentos ahora muestra los recientes; Preferencias muestra
-  el pipe de sesión y los comandos de `designer-mcp`.
-- Up/Down/Home/End navega capas, recientes, estados del prototipo y secuencias/
-  claves de timeline después de seleccionar la lista. Left/Right cambia de
-  pestaña. Falta validar estos recorridos en la GUI.
-- `RecoveryStore` está conectado a la ventana: snapshots al detectar dirty,
-  como máximo cada 30 s; limpieza al guardar, descartar/cerrar o reemplazar;
-  prompts explícitos al arrancar. La GUI todavía requiere prueba manual.
-- Aviso `isMask` corregido y documentación de build/MCP/changelog actualizada.
-- `scripts/verify.ps1` pasó tras los cambios de recuperación, preferencias,
-  recientes, agentes y navegación de listas: 141 pruebas pasaron, 3 de
-  hardware quedaron ignoradas;
-  fmt, clippy, doctests y rustdoc pasaron. La GUI necesita validación manual.
+- Preferencias versionadas en `<data_dir>/preferences.json` (tema, línea de
+  tiempo, tamaño de restauración, 10 recientes). Recientes en Documentos;
+  Agentes muestra el pipe y los comandos de `designer-mcp`. **Probado en la
+  app**: tema y tamaño sobreviven al reinicio; Guardar como añade recientes;
+  Tab+Abajo+Intro abre un reciente.
+- Flechas con alcance por foco (contextos `VerticalList` y `TabList`, un
+  `FocusHandle` por elemento). **Probado**: capas (Abajo/Fin), recientes,
+  secciones (Izquierda con vuelta) y paneles estrechos (Derecha); dentro de un
+  campo, Inicio/Derecha/Fin mueven el cursor sin cambiar sección ni capa.
+  **Sin probar en la app**: estados del prototipo y filas de la línea de
+  tiempo.
+- Recuperación. **Probado tras matar el proceso**: aviso "Hay una sesión
+  recuperable" con Recuperar/Descartar/Dejar intacta; Recuperar devuelve el
+  cambio como no guardado y borra la copia vieja solo después de escribir la
+  nueva; cerrar con Descartar borra la copia. **Sin probar**: aviso de copia
+  dañada.
+- Fallo grave encontrado en la prueba real y corregido: el bucle de
+  autoguardado usaba `tokio::time::sleep` en el ejecutor de GPUI y **la app
+  abortaba al arrancar** aunque `verify.ps1` estaba en verde. Lección: probar
+  siempre el binario antes de dar por bueno un cambio del shell.
 
 Problemas abiertos conocidos:
 
-1. ~~Tab no confirma~~ resuelto en `8421e94`.
-2. ~~Zoom "—" tras ajustar~~ resuelto en `8421e94`.
-3. `[ERROR] RefCell already borrowed` aparece una vez al arrancar. **Ya ocurre
-   en `main`** (comprobado con un binario de `main`), no es de esta rama. Sin
-   diagnosticar; sospecha: reentrada de mensajes de Windows durante el primer
-   render (`set_window_title`).
-4. El texto de `isMask` ya se corrigió para indicar que las máscaras no se
-   importan, pero el recorte de contenido sí se respeta.
-5. La documentación y el changelog se han actualizado para reflejar iconos,
-   zoom/pan, y las operaciones nuevas.
+1. `[ERROR] RefCell already borrowed` al arrancar (ya en `main`). Además, el
+   primer fotograma queda vacío hasta el primer evento de entrada;
+   probablemente es la misma causa.
+2. Un clic simulado en la X de la barra de título no cerró la ventana;
+   `WM_CLOSE` sí mostró el aviso y cerró bien. Comprobar con un clic real.
+3. En el layout estrecho la etiqueta de zoom muestra "—".
+4. Sin validar en la app: Ctrl+rueda, pan con botón central y
+   Espacio+arrastre, overrides de estado del inspector, mover a zoom distinto
+   de 100 %, teclas muertas/IME.
 
-Falta del paquete 1 (decisiones ya tomadas):
-
-- **Flechas**: Arriba/Abajo/Inicio/Fin en documentos recientes, estados y
-  filas de la línea de tiempo. Arriba/Abajo en capas e Izquierda/Derecha en
-  pestañas ya están conectadas, pendiente validarlas en la GUI.
-- **Preferencias pendientes**: conectar la lista de documentos recientes a la
-  pantalla de Documentos y sustituir el texto temporal de Agentes por el pipe
-  y los comandos reales de `designer-mcp`.
-- **Recuperación**: el motor y la shell ya escriben snapshots periódicos de
-  sesiones sucias, limpian al guardar/cerrar/reemplazar y presentan decisiones
-  explícitas al arrancar. La GUI todavía no se ha probado; los snapshots
-  inválidos se conservan si no se elige descartarlos.
-- **Validación GUI**: probar Ctrl+rueda, pan con botón central y con
-  Espacio+arrastre, overrides de estado del inspector, layout estrecho
-  (390 px), tema claro con iconos, mover a zoom distinto de 100 %, teclas
-  muertas/IME en los campos, flechas y el flujo de recuperación.
-- Después: `scripts/verify.ps1` en verde, capturas a 1440 y 390 px en
-  `replica/clone-screens/`, fila en `replica/build-log.md`, actualizar
-  `features.csv`/`ROADMAP.md` con honestidad y fusionar en `main`.
+Falta del paquete 1: la validación GUI del punto 4 y fusionar en `main`.
 
 ## Paquete 2: primer corte
 
