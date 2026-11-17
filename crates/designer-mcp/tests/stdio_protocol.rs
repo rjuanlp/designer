@@ -145,7 +145,10 @@ async fn stdio_initializes_lists_tools_and_reads_a_document() {
             "name": "apply_transaction",
             "arguments": {
                 "expected_revision": 0,
-                "operations": [add_node]
+                "operations": [add_node, {
+                    "op": "set_locked", "page": 1,
+                    "node": sample_document().next_node_id, "locked": true
+                }]
             }
         }
     });

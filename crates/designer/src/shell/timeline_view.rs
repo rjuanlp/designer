@@ -73,7 +73,7 @@ fn larger_duration(duration: u32, maximum: u32) -> u32 {
 }
 
 impl Shell {
-    fn seek_animation(&mut self, time: u32, cx: &mut Context<Self>) {
+    pub(super) fn seek_animation(&mut self, time: u32, cx: &mut Context<Self>) {
         let Some(page) = self.session.document().page(self.page) else {
             return;
         };
@@ -259,7 +259,19 @@ impl Shell {
             && page.animation.next_sequence_id().is_some();
         let mut sequence_rows = Vec::new();
         append_sequence_rows(&page.animation.sequences, 0, &mut sequence_rows);
-        let sequence_controls = row()
+        let sequence_items = std::iter::once(FocusItem::Sequence(None))
+            .chain(
+                sequence_rows
+                    .iter()
+                    .map(|(id, _, _)| FocusItem::Sequence(Some(*id))),
+            )
+            .collect();
+        let sequence_controls = self
+            .vertical_list(sequence_items, cx)
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(metrics::SPACE_XS))
             .child(
                 button(
                     ("sequence-select", 0_u64),
@@ -267,17 +279,10 @@ impl Shell {
                     palette,
                     active_sequence.is_none(),
                 )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.animation.active_sequence = None;
-                    this.animation.pause();
-                    this.redraw(cx);
-                })),
+                .track_focus(&self.item_handle(FocusItem::Sequence(None), cx))
+                .on_click(cx.listener(|this, _, _, cx| this.select_sequence(None, cx))),
             )
             .children(sequence_rows.into_iter().map(|(id, name, depth)| {
-                let offset = page
-                    .animation
-                    .sequence_timing(id)
-                    .map_or(0, |(offset, _, _)| offset);
                 let label = format!("{}{}", "· ".repeat(depth + 1), name);
                 button(
                     ("sequence-select", id.0),
@@ -285,13 +290,12 @@ impl Shell {
                     palette,
                     active_sequence == Some(id),
                 )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.animation.active_sequence = Some(id);
-                    this.seek_animation(offset, cx);
-                }))
+                .track_focus(&self.item_handle(FocusItem::Sequence(Some(id)), cx))
+                .on_click(cx.listener(move |this, _, _, cx| this.select_sequence(Some(id), cx)))
             }))
             .child(command(
                 "sequence-add",
+                Icon::SequenceAdd,
                 strings::ADD_SEQUENCE,
                 can_add_sequence,
                 palette,
@@ -299,6 +303,7 @@ impl Shell {
             ))
             .child(command(
                 "sequence-remove",
+                Icon::SequenceRemove,
                 strings::REMOVE_SEQUENCE,
                 active_sequence.is_some(),
                 palette,
@@ -307,6 +312,11 @@ impl Shell {
         let transport = row()
             .child(command(
                 "animation-play",
+                if self.animation.is_playing() {
+                    Icon::Pause
+                } else {
+                    Icon::Play
+                },
                 if self.animation.is_playing() {
                     strings::PAUSE
                 } else {
@@ -319,8 +329,9 @@ impl Shell {
                 }),
             ))
             .child(
-                button(
+                icon_button(
                     "animation-base",
+                    Icon::Pencil,
                     strings::BASE_VALUES,
                     palette,
                     !self.animation.preview,
@@ -332,16 +343,28 @@ impl Shell {
                 })),
             )
             .child(
-                button("time-back", strings::TIME_BACK, palette, false).on_click(cx.listener(
-                    move |this, _, _, cx| this.seek_animation(global_time.saturating_sub(100), cx),
-                )),
+                icon_button(
+                    "time-back",
+                    Icon::ChevronLeft,
+                    strings::TIME_BACK,
+                    palette,
+                    false,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.seek_animation(global_time.saturating_sub(100), cx)
+                })),
             )
             .child(
-                button("time-forward", strings::TIME_FORWARD, palette, false).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        this.seek_animation(global_time.saturating_add(100), cx)
-                    }),
-                ),
+                icon_button(
+                    "time-forward",
+                    Icon::ChevronRight,
+                    strings::TIME_FORWARD,
+                    palette,
+                    false,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.seek_animation(global_time.saturating_add(100), cx)
+                })),
             )
             .child(muted(strings::animation_time(time, duration), palette));
         let ruler = row().children((0..=4_u32).map(|index| {
@@ -367,6 +390,7 @@ impl Shell {
             .child(muted(strings::DURATION, palette))
             .child(command(
                 "duration-less",
+                Icon::Minus,
                 strings::DURATION_LESS,
                 duration_less < duration,
                 palette,
@@ -388,6 +412,7 @@ impl Shell {
             ))
             .child(command(
                 "duration-more",
+                Icon::Plus,
                 strings::DURATION_MORE,
                 duration_more > duration,
                 palette,
@@ -434,6 +459,7 @@ impl Shell {
         let editor = row()
             .child(command(
                 "key-write",
+                Icon::Key,
                 if key.is_some() {
                     strings::REPLACE_KEY
                 } else {
@@ -445,6 +471,7 @@ impl Shell {
             ))
             .child(command(
                 "key-less",
+                Icon::Minus,
                 strings::VALUE_LESS,
                 editable,
                 palette,
@@ -458,6 +485,7 @@ impl Shell {
             ))
             .child(command(
                 "key-more",
+                Icon::Plus,
                 strings::VALUE_MORE,
                 editable,
                 palette,
@@ -469,7 +497,7 @@ impl Shell {
                     )
                 }),
             ))
-            .child(command(
+            .child(text_command(
                 "key-easing",
                 strings::easing_label(easing),
                 editable,
@@ -479,6 +507,7 @@ impl Shell {
             .child(curve_preview(easing, palette))
             .child(command(
                 "key-remove",
+                Icon::KeyOff,
                 strings::REMOVE_KEY,
                 editable && key.is_some(),
                 palette,
@@ -503,19 +532,36 @@ impl Shell {
                     }
                 }),
             ));
-        let keys = row().children(track.into_iter().flat_map(|track| track.keys.iter()).map(
-            |key| {
-                let local_at = key.time_ms;
-                let at = sequence_offset.saturating_add(local_at);
-                button(
-                    ("key-at", local_at),
-                    strings::key_label(local_at, key.value),
-                    palette,
-                    time == local_at,
-                )
-                .on_click(cx.listener(move |this, _, _, cx| this.seek_animation(at, cx)))
-            },
-        ));
+        let key_items = track
+            .into_iter()
+            .flat_map(|track| track.keys.iter())
+            .map(|key| FocusItem::Keyframe(sequence_offset.saturating_add(key.time_ms)))
+            .collect();
+        let keys = self
+            .vertical_list(key_items, cx)
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(metrics::SPACE_XS))
+            .children(
+                track
+                    .into_iter()
+                    .flat_map(|track| track.keys.iter())
+                    .map(|key| {
+                        let local_at = key.time_ms;
+                        let at = sequence_offset.saturating_add(local_at);
+                        button(
+                            ("key-at", local_at),
+                            strings::key_label(local_at, key.value),
+                            palette,
+                            time == local_at,
+                        )
+                        .track_focus(&self.item_handle(FocusItem::Keyframe(at), cx))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.seek_animation(at, cx);
+                        }))
+                    }),
+            );
         div()
             .id("timeline-editor")
             .flex_1()

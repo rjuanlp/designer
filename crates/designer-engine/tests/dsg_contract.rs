@@ -12,6 +12,44 @@ use zip::{ZipWriter, write::SimpleFileOptions};
 
 const GOOD_MANIFEST: &str = r#"{"format":"designer-dsg","schema_version":1}"#;
 
+#[test]
+fn version_three_frames_default_to_unclipped_and_v4_preserves_clipping() {
+    let mut document = sample_document();
+    let mut json = serde_json::to_value(&document).unwrap();
+    fn remove_clipping(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(object) => {
+                object.remove("clips_content");
+                for child in object.values_mut() {
+                    remove_clipping(child);
+                }
+            }
+            serde_json::Value::Array(array) => {
+                for child in array {
+                    remove_clipping(child);
+                }
+            }
+            _ => {}
+        }
+    }
+    remove_clipping(&mut json);
+    let bytes = archive(&[
+        (
+            "manifest.json",
+            br#"{"format":"designer-dsg","schema_version":3}"#,
+        ),
+        ("document.json", &serde_json::to_vec(&json).unwrap()),
+    ]);
+    assert_eq!(dsg::from_bytes(&bytes).unwrap(), document);
+    document.pages[0].nodes[0].kind = designer_core::NodeKind::Frame {
+        clips_content: true,
+    };
+    assert_eq!(
+        dsg::from_bytes(&dsg::to_bytes(&document).unwrap()).unwrap(),
+        document
+    );
+}
+
 fn archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
     for (name, bytes) in entries {
@@ -60,7 +98,7 @@ fn the_sample_document_round_trips_with_stable_identifiers() {
 }
 
 #[test]
-fn writer_marks_the_interactive_prototype_schema_as_version_three() {
+fn writer_marks_the_frame_clipping_schema_as_version_four() {
     let bytes = dsg::to_bytes(&sample_document()).expect("writes");
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("archive");
     let mut manifest = String::new();
@@ -70,7 +108,7 @@ fn writer_marks_the_interactive_prototype_schema_as_version_three() {
         .read_to_string(&mut manifest)
         .expect("manifest text");
     let manifest: serde_json::Value = serde_json::from_str(&manifest).expect("manifest json");
-    assert_eq!(manifest["schema_version"], 3);
+    assert_eq!(manifest["schema_version"], 4);
 }
 
 #[test]
@@ -220,13 +258,13 @@ fn damaged_and_foreign_files_are_refused() {
     let future = archive(&[
         (
             "manifest.json",
-            br#"{"format":"designer-dsg","schema_version":4}"#,
+            br#"{"format":"designer-dsg","schema_version":5}"#,
         ),
         ("document.json", &good),
     ]);
     assert!(matches!(
         dsg::from_bytes(&future),
-        Err(DsgError::UnsupportedVersion(4))
+        Err(DsgError::UnsupportedVersion(5))
     ));
 }
 

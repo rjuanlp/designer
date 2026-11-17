@@ -9,7 +9,9 @@ use serde_json::{Value, json};
 use crate::{Session, import::import_figma_file};
 
 /// Windows named pipe used to attach MCP to the running Designer session.
-pub const WINDOWS_SESSION_PIPE: &str = r"\\.\pipe\designer-session-v1";
+pub fn windows_session_pipe() -> String {
+    crate::identity::session_pipe()
+}
 
 /// A request to read or mutate one open document session.
 #[derive(Clone, Debug, Deserialize, Serialize)]

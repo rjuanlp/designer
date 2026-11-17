@@ -6,7 +6,7 @@ use std::{fmt::Display, path::Path};
 use designer_core::NodeKind;
 
 /// Application name, also used in the window title.
-pub const APP_NAME: &str = "Designer";
+pub const APP_NAME: &str = designer_engine::identity::DISPLAY_NAME;
 
 /// Top-level sections of the application.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,7 +131,7 @@ impl NarrowPanel {
 /// User-facing name of a node kind.
 pub fn kind_label(kind: &NodeKind) -> &'static str {
     match kind {
-        NodeKind::Frame => "Marco",
+        NodeKind::Frame { .. } => "Marco",
         NodeKind::Group => "Grupo",
         NodeKind::Rectangle { .. } => "Rectángulo",
         NodeKind::Ellipse => "Elipse",
@@ -143,13 +143,10 @@ pub fn kind_label(kind: &NodeKind) -> &'static str {
 pub const PAGES: &str = "Páginas";
 pub const LAYERS: &str = "Capas";
 pub const NO_LAYERS: &str = "Esta página todavía no tiene capas.";
-pub const HIDDEN: &str = "Oculta";
 pub const LOCKED: &str = "Bloqueada";
 
 pub const PROPERTIES: &str = "Propiedades";
 pub const NOTHING_SELECTED: &str = "Selecciona una capa para ver sus propiedades.";
-pub const READ_ONLY_NOTE: &str =
-    "Las capas se crean, mueven y borran en el lienzo. Estos campos todavía no se editan.";
 pub const NAME: &str = "Nombre";
 pub const KIND: &str = "Tipo";
 pub const POSITION_X: &str = "X";
@@ -160,12 +157,10 @@ pub const RADIUS: &str = "Radio";
 pub const FILL: &str = "Relleno";
 pub const NO_FILL: &str = "Sin relleno";
 pub const OPACITY: &str = "Opacidad";
-pub const FILL_OPACITY: &str = "Opacidad del relleno";
 pub const CONTENT: &str = "Contenido";
 pub const VISIBLE: &str = "Visible";
 pub const YES: &str = "Sí";
 pub const NO: &str = "No";
-pub const TEXT_NOT_RENDERED: &str = "El texto aún no se dibuja en el lienzo.";
 
 pub const TIMELINE: &str = "Línea de tiempo";
 pub const SHOW_TIMELINE: &str = "Mostrar línea de tiempo";
@@ -176,16 +171,16 @@ pub const PLAY: &str = "Reproducir";
 pub const PLAYING: &str = "Reproduciendo";
 pub const PAUSE: &str = "Pausar";
 pub const BASE_VALUES: &str = "Editar base";
-pub const TIME_BACK: &str = "−100 ms";
-pub const TIME_FORWARD: &str = "+100 ms";
+pub const TIME_BACK: &str = "Retroceder 100 ms";
+pub const TIME_FORWARD: &str = "Avanzar 100 ms";
 pub const DURATION: &str = "Duración";
-pub const DURATION_LESS: &str = "−500 ms";
-pub const DURATION_MORE: &str = "+500 ms";
+pub const DURATION_LESS: &str = "Acortar la duración 500 ms";
+pub const DURATION_MORE: &str = "Alargar la duración 500 ms";
 pub const ADD_KEY: &str = "Añadir clave";
 pub const REPLACE_KEY: &str = "Actualizar clave";
 pub const REMOVE_KEY: &str = "Quitar clave";
-pub const VALUE_LESS: &str = "− Valor";
-pub const VALUE_MORE: &str = "+ Valor";
+pub const VALUE_LESS: &str = "Reducir el valor";
+pub const VALUE_MORE: &str = "Aumentar el valor";
 pub const LINEAR: &str = "Lineal";
 pub const CONSTANT: &str = "Constante";
 pub const EASE_IN: &str = "Entrada suave";
@@ -296,12 +291,44 @@ pub const NOT_SAVED_YET: &str = "Todavía no se ha guardado en un archivo.";
 pub const NEW_DOCUMENT: &str = "Nuevo documento";
 pub const OPEN_DOCUMENT: &str = "Abrir un archivo .dsg…";
 pub const SAVE_AS: &str = "Guardar como…";
-pub const NO_RECENT_DOCUMENTS: &str =
-    "La lista de documentos recientes todavía no está disponible.";
+pub const RECENT_DOCUMENTS: &str = "Documentos recientes";
+pub const NO_RECENT_DOCUMENTS: &str = "Todavía no hay documentos recientes.";
 pub const UNSAVED_TITLE: &str = "Hay cambios sin guardar";
 pub const UNSAVED_DETAIL: &str = "Si continúas, los cambios de este documento se perderán.";
 pub const DISCARD: &str = "Descartar cambios";
 pub const KEEP_EDITING: &str = "Seguir editando";
+pub const RECOVERY_TITLE: &str = "Hay una sesión recuperable";
+pub const RECOVER: &str = "Recuperar";
+pub const RECOVERY_DISCARD: &str = "Descartar recuperación";
+pub const RECOVERY_KEEP: &str = "Dejar intacta";
+
+pub fn recovery_detail(name: &str, path: Option<&Path>) -> String {
+    match path {
+        Some(path) => format!(
+            "Se encontró una copia sin guardar de «{name}», procedente de {}.",
+            path.display()
+        ),
+        None => format!("Se encontró una copia sin guardar de «{name}»."),
+    }
+}
+
+pub fn recovery_invalid(detail: &dyn Display) -> String {
+    format!(
+        "No se pudo validar una copia de recuperación. No se borrará sin tu decisión. Detalle: {detail}"
+    )
+}
+
+pub fn recovery_failed(detail: &dyn Display) -> String {
+    format!("No se pudo completar la recuperación. Detalle: {detail}")
+}
+
+pub fn recovery_save_failed(detail: &dyn Display) -> String {
+    format!("No se pudo guardar la copia de recuperación. Detalle: {detail}")
+}
+
+pub fn preferences_save_failed(detail: &dyn Display) -> String {
+    format!("No se pudieron guardar las preferencias. Detalle: {detail}")
+}
 
 /// Status after a successful save.
 pub fn saved(path: Option<&Path>) -> String {
@@ -347,8 +374,11 @@ pub const GRAPHICS: &str = "Gráficos";
 pub const GRAPHICS_ADAPTER: &str = "Adaptador";
 pub const GRAPHICS_UNAVAILABLE: &str = "No disponible";
 pub const AGENTS: &str = "Agentes";
-pub const AGENTS_PENDING: &str =
-    "Los clientes MCP locales pueden conectarse a la sesión abierta de Designer.";
+pub const AGENT_PIPE: &str = "Pipe de la sesión abierta";
+pub const AGENT_CONNECT: &str = "Conectar al documento abierto";
+pub const AGENT_OPEN: &str = "Abrir una sesión independiente";
+pub const AGENT_CONNECT_COMMAND: &str = "designer-mcp --connect";
+pub const AGENT_OPEN_COMMAND: &str = "designer-mcp --open <archivo.dsg>";
 pub const MCP_UPDATED: &str = "El documento se actualizó desde un cliente MCP.";
 
 pub fn mcp_server_failed(error: &dyn Display) -> String {
@@ -357,7 +387,20 @@ pub fn mcp_server_failed(error: &dyn Display) -> String {
     )
 }
 pub const SHORTCUTS: &str = "Atajos";
-pub const SHORTCUT_LIST: [(&str, &str); 11] = [
+
+pub fn preferences_load_failed(error: &impl std::fmt::Display) -> String {
+    format!(
+        "No se pudieron leer las preferencias guardadas; se usan los valores predeterminados. Detalle: {error}"
+    )
+}
+
+pub const SHORTCUT_LIST: [(&str, &str); 18] = [
+    ("Izquierda/Derecha", "Navegar por las secciones"),
+    ("Ctrl++ / Ctrl+-", "Acercar / Alejar"),
+    ("Ctrl+0", "Ajustar al contenido"),
+    ("Ctrl+1", "Zoom al 100 %"),
+    ("Ctrl+rueda", "Cambiar el zoom"),
+    ("Botón central o Espacio+arrastre", "Desplazar el lienzo"),
     ("Ctrl+N", "Nuevo documento"),
     ("Ctrl+O", "Abrir un archivo .dsg"),
     ("Ctrl+S / Ctrl+Mayús+S", "Guardar / Guardar como"),
@@ -369,6 +412,7 @@ pub const SHORTCUT_LIST: [(&str, &str); 11] = [
     ("Intro o Espacio", "Activar el control enfocado"),
     ("Ctrl+T", "Mostrar u ocultar la línea de tiempo"),
     ("Ctrl+Mayús+L", "Cambiar entre tema claro y oscuro"),
+    ("Arriba/Abajo, Inicio/Fin", "Navegar por la lista activa"),
 ];
 
 /// Accessibility navigation group.
@@ -379,6 +423,31 @@ pub const TOOLS_ACTIONS: &str = "Herramientas y acciones";
 /// Document lock error.
 pub const DOCUMENT_LOCKED: &str =
     "Otro proceso tiene abierto este documento. Cierra esa sesión antes de abrirlo o guardarlo.";
+
+/// Inspector validation feedback.
+pub const INVALID_PROPERTY: &str = "Valor no válido. Se ha restaurado el valor anterior.";
+pub const CLIPS_CONTENT: &str = "Recortar contenido";
+pub const RESET_OVERRIDE: &str = "Restablecer propiedad";
+pub const ADD_FILL: &str = "Añadir relleno";
+pub const HIDE_LAYER: &str = "Ocultar capa";
+pub const SHOW_LAYER: &str = "Mostrar capa";
+pub const LOCK_LAYER: &str = "Bloquear capa";
+pub const UNLOCK_LAYER: &str = "Desbloquear capa";
+pub const RAISE_LAYER: &str = "Subir capa";
+pub const LOWER_LAYER: &str = "Bajar capa";
+
+pub const ZOOM_IN: &str = "Acercar";
+pub const ZOOM_OUT: &str = "Alejar";
+pub const ZOOM_FIT: &str = "Ajustar al contenido";
+pub const ZOOM_RESET: &str = "Zoom al 100 %";
+
+/// The zoom as a whole percentage, or a dash before the first frame.
+pub fn zoom_percent(zoom: Option<f64>) -> String {
+    match zoom {
+        Some(zoom) => format!("{} %", (zoom * 100.0).round()),
+        None => "—".to_owned(),
+    }
+}
 
 #[cfg(test)]
 mod tests {

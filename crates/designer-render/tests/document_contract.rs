@@ -33,6 +33,59 @@ fn page(nodes: Vec<Node>) -> Page {
 }
 
 #[test]
+fn nested_frame_clips_are_inherited_and_limit_hits() {
+    let leaf = node(
+        3,
+        NodeKind::Ellipse,
+        Rect::new(0.0, 0.0, 100.0, 100.0),
+        vec![],
+    );
+    let inner = node(
+        2,
+        NodeKind::Frame {
+            clips_content: true,
+        },
+        Rect::new(10.0, 10.0, 20.0, 20.0),
+        vec![leaf],
+    );
+    let outer = node(
+        1,
+        NodeKind::Frame {
+            clips_content: true,
+        },
+        Rect::new(0.0, 0.0, 25.0, 25.0),
+        vec![inner],
+    );
+    let page = page(vec![outer]);
+    let items = display_list(&page);
+    assert!(items[0].clips.is_empty());
+    assert_eq!(items[1].clips, vec![items[0].bounds]);
+    assert_eq!(items[2].clips, vec![items[0].bounds, items[1].bounds]);
+    assert_eq!(designer_render::document::hit_test(&page, 60.0, 60.0), None);
+    assert_eq!(designer_render::document::hit_test(&page, 27.0, 27.0), None);
+    let _ = page_scene(&page, ViewTransform::IDENTITY, None);
+}
+
+#[test]
+fn view_round_trips_and_zoom_preserves_the_pointer_anchor() {
+    let mut view = ViewTransform {
+        scale: 2.0,
+        offset_x: -80.0,
+        offset_y: 17.0,
+    };
+    let screen = view.to_screen(80.0, 60.0);
+    assert_eq!(view.to_page(screen.0, screen.1), (80.0, 60.0));
+    let anchor = view.to_page(321.0, 123.0);
+    for scale in [0.001, 0.5, 2.0, 100.0] {
+        view.zoom_about(scale, 321.0, 123.0);
+        let actual = view.to_page(321.0, 123.0);
+        assert!((actual.0 - anchor.0).abs() < 1e-9);
+        assert!((actual.1 - anchor.1).abs() < 1e-9);
+        assert!((0.05..=64.0).contains(&view.scale));
+    }
+}
+
+#[test]
 fn children_are_offset_by_every_ancestor_and_painted_after_them() {
     let leaf = node(3, NodeKind::Ellipse, Rect::new(1.0, 2.0, 4.0, 4.0), vec![]);
     let group = node(
@@ -43,7 +96,9 @@ fn children_are_offset_by_every_ancestor_and_painted_after_them() {
     );
     let frame = node(
         1,
-        NodeKind::Frame,
+        NodeKind::Frame {
+            clips_content: false,
+        },
         Rect::new(100.0, 200.0, 300.0, 300.0),
         vec![group],
     );
@@ -69,7 +124,9 @@ fn hidden_nodes_hide_their_subtree_and_unfilled_or_text_nodes_paint_nothing() {
     let child = node(2, NodeKind::Ellipse, Rect::new(0.0, 0.0, 1.0, 1.0), vec![]);
     let mut hidden = node(
         1,
-        NodeKind::Frame,
+        NodeKind::Frame {
+            clips_content: false,
+        },
         Rect::new(0.0, 0.0, 9.0, 9.0),
         vec![child],
     );
@@ -120,13 +177,17 @@ fn fit_view_centers_content_without_enlarging_it() {
 fn content_bounds_cover_all_top_level_nodes() {
     let a = node(
         1,
-        NodeKind::Frame,
+        NodeKind::Frame {
+            clips_content: false,
+        },
         Rect::new(10.0, 20.0, 30.0, 40.0),
         vec![],
     );
     let b = node(
         2,
-        NodeKind::Frame,
+        NodeKind::Frame {
+            clips_content: false,
+        },
         Rect::new(-5.0, 50.0, 10.0, 100.0),
         vec![],
     );
@@ -163,7 +224,9 @@ fn hit_testing_returns_the_topmost_painted_unlocked_node() {
     );
     let frame = node(
         1,
-        NodeKind::Frame,
+        NodeKind::Frame {
+            clips_content: false,
+        },
         Rect::new(100.0, 100.0, 100.0, 100.0),
         vec![child],
     );

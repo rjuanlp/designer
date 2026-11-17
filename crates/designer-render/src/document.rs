@@ -35,6 +35,8 @@ pub enum Shape {
 /// One filled shape in page coordinates.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DrawItem {
+    /// Ancestor frame clips in page coordinates, outermost first.
+    pub clips: Vec<Rect>,
     /// The node that produced the item.
     pub node: NodeId,
     /// Bounds in page coordinates.
@@ -57,6 +59,24 @@ pub struct ViewTransform {
 }
 
 impl ViewTransform {
+    /// Map a document point to screen coordinates.
+    pub fn to_screen(&self, x: f64, y: f64) -> (f64, f64) {
+        (
+            x * self.scale + self.offset_x,
+            y * self.scale + self.offset_y,
+        )
+    }
+
+    /// Zoom about a screen point, preserving the document point below it.
+    pub fn zoom_about(&mut self, scale: f64, x: f64, y: f64) {
+        if !scale.is_finite() || !x.is_finite() || !y.is_finite() {
+            return;
+        }
+        let point = self.to_page(x, y);
+        self.scale = scale.clamp(0.05, 64.0);
+        self.offset_x = x - point.0 * self.scale;
+        self.offset_y = y - point.1 * self.scale;
+    }
     /// The identity view.
     pub const IDENTITY: Self = Self {
         scale: 1.0,
@@ -79,7 +99,7 @@ impl ViewTransform {
 
 fn shape_of(node: &Node) -> Option<Shape> {
     match &node.kind {
-        NodeKind::Frame => Some(Shape::Rectangle { corner_radius: 0.0 }),
+        NodeKind::Frame { .. } => Some(Shape::Rectangle { corner_radius: 0.0 }),
         NodeKind::Rectangle { corner_radius } => Some(Shape::Rectangle {
             corner_radius: *corner_radius,
         }),
@@ -95,7 +115,13 @@ fn fill_with_opacity(mut fill: Color, opacity: f64) -> Option<Color> {
     (fill.a != 0).then_some(fill)
 }
 
-fn collect(node: &Node, origin: (f64, f64), inherited_opacity: f64, items: &mut Vec<DrawItem>) {
+fn collect(
+    node: &Node,
+    origin: (f64, f64),
+    inherited_opacity: f64,
+    clips: &mut Vec<Rect>,
+    items: &mut Vec<DrawItem>,
+) {
     if !node.visible {
         return;
     }
@@ -109,14 +135,27 @@ fn collect(node: &Node, origin: (f64, f64), inherited_opacity: f64, items: &mut 
         node.fill.and_then(|fill| fill_with_opacity(fill, opacity)),
     ) {
         items.push(DrawItem {
+            clips: clips.clone(),
             node: node.id,
             bounds,
             shape,
             fill,
         });
     }
+    let clipping = matches!(
+        node.kind,
+        NodeKind::Frame {
+            clips_content: true
+        }
+    );
+    if clipping {
+        clips.push(bounds);
+    }
     for child in &node.children {
-        collect(child, (bounds.x, bounds.y), opacity, items);
+        collect(child, (bounds.x, bounds.y), opacity, clips, items);
+    }
+    if clipping {
+        clips.pop();
     }
 }
 
@@ -127,7 +166,7 @@ fn collect(node: &Node, origin: (f64, f64), inherited_opacity: f64, items: &mut 
 pub fn display_list(page: &Page) -> Vec<DrawItem> {
     let mut items = Vec::new();
     for node in &page.nodes {
-        collect(node, (0.0, 0.0), 1.0, &mut items);
+        collect(node, (0.0, 0.0), 1.0, &mut Vec::new(), &mut items);
     }
     items
 }
@@ -247,6 +286,15 @@ fn hit(node: &Node, origin: (f64, f64), inherited_opacity: f64, x: f64, y: f64) 
     }
     let bounds = node.bounds.translated(origin.0, origin.1);
     // Children are painted over their parent, and later children on top.
+    if matches!(
+        node.kind,
+        NodeKind::Frame {
+            clips_content: true
+        }
+    ) && !contains(&Shape::Rectangle { corner_radius: 0.0 }, bounds, x, y)
+    {
+        return None;
+    }
     node.children
         .iter()
         .rev()
@@ -331,6 +379,15 @@ pub fn page_scene(page: &Page, view: ViewTransform, selection: Option<NodeId>) -
     let mut scene = Scene::new();
     let transform = view.affine();
     for item in display_list(page) {
+        for clip in &item.clips {
+            scene.push_layer(
+                Fill::NonZero,
+                peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &vello::kurbo::Rect::new(clip.x, clip.y, clip.x + clip.width, clip.y + clip.height),
+            );
+        }
         let Rect {
             x,
             y,
@@ -363,6 +420,9 @@ pub fn page_scene(page: &Page, view: ViewTransform, selection: Option<NodeId>) -
                 None,
                 &vello_path(&path, item.bounds),
             ),
+        }
+        for _ in &item.clips {
+            scene.pop_layer();
         }
     }
 

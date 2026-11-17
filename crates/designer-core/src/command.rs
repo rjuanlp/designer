@@ -25,6 +25,51 @@ pub const MAX_TEXT_CHARS: usize = 100_000;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Operation {
+    /// Change a rectangle's corner radius.
+    SetCornerRadius {
+        /// Target page.
+        page: PageId,
+        /// Target rectangle.
+        node: NodeId,
+        /// Finite, nonnegative radius.
+        corner_radius: f64,
+    },
+    /// Change subtree visibility.
+    SetVisible {
+        /// Target page.
+        page: PageId,
+        /// Target node.
+        node: NodeId,
+        /// New visibility.
+        visible: bool,
+    },
+    /// Change canvas editing protection.
+    SetLocked {
+        /// Target page.
+        page: PageId,
+        /// Target node.
+        node: NodeId,
+        /// New protection.
+        locked: bool,
+    },
+    /// Move within the current sibling list, clamping the destination.
+    ReorderNode {
+        /// Target page.
+        page: PageId,
+        /// Target node.
+        node: NodeId,
+        /// Destination index in paint order.
+        index: usize,
+    },
+    /// Change frame clipping.
+    SetClipsContent {
+        /// Target page.
+        page: PageId,
+        /// Target frame.
+        node: NodeId,
+        /// Whether descendants are clipped.
+        clips_content: bool,
+    },
     /// Create a node as the last (topmost) child of `parent`, or of the page.
     AddNode {
         /// Target page.
@@ -75,6 +120,15 @@ pub enum Operation {
         node: NodeId,
         /// New fill, or `None` to remove it.
         fill: Option<Color>,
+    },
+    /// Replace the geometry of a path node without changing its bounds.
+    SetPath {
+        /// Target page.
+        page: PageId,
+        /// Target path node.
+        node: NodeId,
+        /// New normalized path geometry.
+        path: PathData,
     },
     /// Replace the base opacity of a node.
     SetOpacity {
@@ -244,12 +298,18 @@ pub enum Operation {
 
 impl Operation {
     /// The `op` tag of every operation, as serialized.
-    pub const NAMES: [&'static str; 19] = [
+    pub const NAMES: [&'static str; 25] = [
+        "set_corner_radius",
+        "set_visible",
+        "set_locked",
+        "reorder_node",
+        "set_clips_content",
         "add_node",
         "delete_node",
         "set_bounds",
         "set_name",
         "set_fill",
+        "set_path",
         "set_opacity",
         "set_keyframe",
         "remove_keyframe",
@@ -270,6 +330,8 @@ impl Operation {
 /// Why a transaction was rejected. The document is unchanged.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CommandError {
+    /// The operation does not support the target node kind.
+    WrongNodeKind(NodeId),
     /// The transaction has no operations or more than [`MAX_OPERATIONS`].
     BadOperationCount(usize),
     /// An operation names a page that does not exist.
@@ -293,6 +355,7 @@ pub enum CommandError {
 impl fmt::Display for CommandError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::WrongNodeKind(id) => write!(f, "node {} has an unsupported kind", id.0),
             Self::BadOperationCount(count) => write!(
                 f,
                 "a transaction needs 1 to {MAX_OPERATIONS} operations, got {count}"
@@ -334,6 +397,17 @@ fn remove(nodes: &mut Vec<Node>, id: NodeId) -> Option<Node> {
         .find_map(|node| remove(&mut node.children, id))
 }
 
+fn reorder(nodes: &mut Vec<Node>, id: NodeId, index: usize) -> bool {
+    if let Some(old) = nodes.iter().position(|node| node.id == id) {
+        let node = nodes.remove(old);
+        nodes.insert(index.min(nodes.len()), node);
+        return true;
+    }
+    nodes
+        .iter_mut()
+        .any(|node| reorder(&mut node.children, id, index))
+}
+
 fn check_text(name: &str, kind: Option<&NodeKind>) -> Result<(), CommandError> {
     let content_chars = match kind {
         Some(NodeKind::Text { content }) => content.chars().count(),
@@ -353,6 +427,53 @@ impl Document {
     ) -> Result<(), CommandError> {
         use CommandError::{UnknownNode, UnknownPage};
         match operation {
+            Operation::SetCornerRadius {
+                page,
+                node,
+                corner_radius,
+            } => {
+                let NodeKind::Rectangle {
+                    corner_radius: radius,
+                } = &mut self.node_mut(*page, *node)?.kind
+                else {
+                    return Err(CommandError::WrongNodeKind(*node));
+                };
+                *radius = *corner_radius;
+                affected.push(*node);
+            }
+            Operation::SetClipsContent {
+                page,
+                node,
+                clips_content,
+            } => {
+                let NodeKind::Frame {
+                    clips_content: clips,
+                } = &mut self.node_mut(*page, *node)?.kind
+                else {
+                    return Err(CommandError::WrongNodeKind(*node));
+                };
+                *clips = *clips_content;
+                affected.push(*node);
+            }
+            Operation::SetVisible {
+                page,
+                node,
+                visible,
+            } => {
+                self.node_mut(*page, *node)?.visible = *visible;
+                affected.push(*node);
+            }
+            Operation::SetLocked { page, node, locked } => {
+                self.node_mut(*page, *node)?.locked = *locked;
+                affected.push(*node);
+            }
+            Operation::ReorderNode { page, node, index } => {
+                let page = self.page_mut(*page).ok_or(UnknownPage(*page))?;
+                if !reorder(&mut page.nodes, *node, *index) {
+                    return Err(UnknownNode(*node));
+                }
+                affected.push(*node);
+            }
             Operation::AddNode {
                 page,
                 parent,
@@ -404,6 +525,14 @@ impl Document {
             }
             Operation::SetFill { page, node, fill } => {
                 self.node_mut(*page, *node)?.fill = *fill;
+                affected.push(*node);
+            }
+            Operation::SetPath { page, node, path } => {
+                let target = self.node_mut(*page, *node)?;
+                let NodeKind::Path { path: current } = &mut target.kind else {
+                    return Err(CommandError::WrongNodeKind(*node));
+                };
+                *current = path.clone();
                 affected.push(*node);
             }
             Operation::SetOpacity {
@@ -683,10 +812,21 @@ impl Operation {
         "remove_sequence_keyframe",
         "set_sequence_morph_keyframe",
         "remove_sequence_morph_keyframe",
+        "set_corner_radius",
+        "set_visible",
+        "set_locked",
+        "reorder_node",
+        "set_clips_content",
+        "set_path",
     ];
     /// Serialized discriminator; exhaustive so new variants require capability updates.
     pub fn discriminator(&self) -> &'static str {
         match self {
+            Self::SetCornerRadius { .. } => "set_corner_radius",
+            Self::SetVisible { .. } => "set_visible",
+            Self::SetLocked { .. } => "set_locked",
+            Self::ReorderNode { .. } => "reorder_node",
+            Self::SetClipsContent { .. } => "set_clips_content",
             Self::AddNode { .. } => Self::DISCRIMINATORS[0],
             Self::DeleteNode { .. } => Self::DISCRIMINATORS[1],
             Self::SetBounds { .. } => Self::DISCRIMINATORS[2],
@@ -706,6 +846,7 @@ impl Operation {
             Self::RemoveSequenceKeyframe { .. } => Self::DISCRIMINATORS[16],
             Self::SetSequenceMorphKeyframe { .. } => Self::DISCRIMINATORS[17],
             Self::RemoveSequenceMorphKeyframe { .. } => Self::DISCRIMINATORS[18],
+            Self::SetPath { .. } => "set_path",
         }
     }
 }
@@ -784,6 +925,64 @@ mod tests {
             ],
             closed: true,
         }
+    }
+
+    #[test]
+    fn set_path_replaces_geometry_and_rejects_morph_topology_changes() {
+        let add_path = Operation::AddNode {
+            page: PAGE,
+            parent: None,
+            name: "path".into(),
+            kind: NodeKind::Path { path: test_path() },
+            bounds: Rect::new(0.0, 0.0, 100.0, 100.0),
+            fill: None,
+        };
+        let source = Document::empty("path");
+        let (created, _) = source.transact(&[add_path]).expect("valid path");
+        let mut moved = test_path();
+        moved.start.x = 0.25;
+        let (updated, affected) = created
+            .transact(&[Operation::SetPath {
+                page: PAGE,
+                node: NodeId(1),
+                path: moved.clone(),
+            }])
+            .expect("valid replacement");
+        assert_eq!(affected, [NodeId(1)]);
+        assert_eq!(
+            updated.pages[0].node(NodeId(1)).expect("path node").kind,
+            NodeKind::Path { path: moved }
+        );
+        assert_eq!(
+            created.pages[0].node(NodeId(1)).expect("source path").kind,
+            NodeKind::Path { path: test_path() }
+        );
+
+        let (animated, _) = created
+            .transact(&[Operation::SetMorphKeyframe {
+                page: PAGE,
+                node: NodeId(1),
+                time_ms: 0,
+                path: test_path(),
+                easing: Easing::Linear,
+            }])
+            .expect("valid morph key");
+        let animated_before = animated.clone();
+        let mut incompatible = test_path();
+        incompatible.segments[0] = PathSegment::CubicTo {
+            control1: PathPoint { x: 0.2, y: 0.1 },
+            control2: PathPoint { x: 0.8, y: 0.1 },
+            end: PathPoint { x: 1.0, y: 0.0 },
+        };
+        assert!(matches!(
+            animated.transact(&[Operation::SetPath {
+                page: PAGE,
+                node: NodeId(1),
+                path: incompatible,
+            }]),
+            Err(CommandError::Invalid(ModelError::InvalidAnimation(..)))
+        ));
+        assert_eq!(animated, animated_before);
     }
 
     #[test]
@@ -1187,6 +1386,31 @@ mod tests {
     #[test]
     fn operations_round_trip_through_json_with_stable_names() {
         let operations = vec![
+            Operation::SetCornerRadius {
+                page: PAGE,
+                node: NodeId(1),
+                corner_radius: 4.0,
+            },
+            Operation::SetVisible {
+                page: PAGE,
+                node: NodeId(1),
+                visible: false,
+            },
+            Operation::SetLocked {
+                page: PAGE,
+                node: NodeId(1),
+                locked: true,
+            },
+            Operation::ReorderNode {
+                page: PAGE,
+                node: NodeId(1),
+                index: 2,
+            },
+            Operation::SetClipsContent {
+                page: PAGE,
+                node: NodeId(1),
+                clips_content: true,
+            },
             add(None, 1.0),
             Operation::DeleteNode {
                 page: PAGE,
@@ -1206,6 +1430,11 @@ mod tests {
                 page: PAGE,
                 node: NodeId(1),
                 fill: None,
+            },
+            Operation::SetPath {
+                page: PAGE,
+                node: NodeId(1),
+                path: test_path(),
             },
             Operation::SetOpacity {
                 page: PAGE,

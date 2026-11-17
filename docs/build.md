@@ -33,7 +33,14 @@ cargo run --locked -p designer
 
 The application opens the sample document. Ctrl+N creates an empty document;
 Frame, Rectangle and Ellipse draw shapes by clicking or dragging. Move selects
-and drags layers. Delete removes the selection. Inspector values remain read-only. A debug build
+and drags layers. Delete removes an unlocked selection. The inspector edits names,
+bounds, rectangle radius, opacity, fill, visibility, locking and frame clipping.
+Enter or focus loss commits one undoable transaction; Escape restores the value.
+Numbers accept a decimal comma or point, and fills accept `#RRGGBB` or
+`#RRGGBBAA`. Invalid values revert with a Spanish status message. Layer controls
+toggle visibility and locking, and raise/lower within the sibling paint order.
+In Preview, bounds, fill and opacity edit the selected state's overrides;
+reset controls restore inheritance from the base node. A debug build
 takes several seconds to show its first frame while the GPU device and Vello
 shaders are prepared; the window is empty until then.
 
@@ -53,6 +60,10 @@ Launch options set the initial state, mainly for screenshots:
 Keyboard: Tab and Shift+Tab move focus, Enter or Space activates the focused
 control. Ctrl+S saves, Ctrl+Shift+S saves as, Ctrl+O opens, Ctrl+Z undoes,
 Ctrl+Y or Ctrl+Shift+Z redoes, Escape cancels a drag. Ctrl+T toggles the timeline and Ctrl+Shift+L switches theme.
+Arrow Up/Down changes the active list selection, while Home/End jump to its
+first/last item. This covers layers, recent documents, prototype states, and
+timeline sequences/keyframes after selecting one of those timeline rows.
+Left/Right moves between the top-level sections.
 
 In the timeline, select a layer and property, seek to a time, then add or
 adjust a keyframe. The curve button cycles through constant, linear, ease-in,
@@ -64,6 +75,35 @@ relative to its parent, plays once, then holds its last values. Direct curve
 editing and path/morph-key authoring are not yet available in the UI. The
 document model and renderer support paths and morph keyframes between paths
 with matching segment topology.
+
+Application identity is centralized in `designer_engine::identity`: display
+name, storage directory, named pipe prefix and recovery directory name.
+`data_dir()` resolves `DESIGNER_DATA_DIR` first, then `%APPDATA%/Designer`,
+falling back to the temporary directory plus `Designer`. Empty environment
+values are treated as absent. The app stores preferences under
+`<data_dir>/preferences.json` and keeps unsaved-session snapshots under
+`<data_dir>/recovery/`. Dirty documents are snapshotted at most once every
+30 seconds; abandoned snapshots are offered at startup for recovery or explicit
+discard. Invalid snapshots are reported and retained unless explicitly
+discarded.
+
+The Preferences section shows the active local session pipe and the
+`designer-mcp --connect` and `designer-mcp --open <file.dsg>` command forms.
+
+New frames drawn with the frame tool clip descendants. Figma JSON imports
+honor `clipsContent`; legacy documents remain unclipped unless explicitly
+changed. The renderer uses ancestor Vello clips and excludes clipped-away
+descendants from hit testing. The transform API includes bounded pointer-anchor
+zoom math, and the shell exposes interactive zoom and pan controls.
+
+`text_field::EditState` provides window-independent single-line editing with
+UTF-16 platform ranges and composition replacement. Tests cover Spanish dead-key
+composition, supplementary Unicode characters, selection, deletion and reversible
+commits. A reusable GPUI field now registers an `EntityInputHandler`, paints
+selection and caret, and supports keyboard navigation and clipboard operations.
+AccessKit text controls expose SetValue using the same commit path as Enter.
+Manual IME, screen-reader, theme and responsive-layout validation remains for
+the graphical reviewer; automated verification does not launch a window.
 
 ## Troubleshooting
 

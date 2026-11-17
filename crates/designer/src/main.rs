@@ -3,7 +3,7 @@
 //! Navigation, panels, themes and a Vello canvas on which frames, rectangles
 //! and ellipses can be drawn, moved and deleted, with undo/redo and `.dsg`
 //! files. The timeline supports basic keyframe editing and playback. Property
-//! editing and text entry remain pending. Windows MCP clients can attach to the
+//! editing uses single-line GPUI input fields. Windows MCP clients can attach to the
 //! live session over a local named pipe or run a separate locked headless session.
 //! AccessKit exposes navigation and screen controls; manual screen-reader
 //! validation remains pending. Per-control bounds are not supplied.
@@ -13,8 +13,11 @@
 //! `--page N` (zero-based), `--select NODE_ID`, `--panel layers|canvas|inspector`,
 //! `--timeline`, `--light`, `--open FILE.dsg`.
 
+mod icons;
+mod inspector;
 mod prototype_preview;
 mod strings;
+pub mod text_field;
 mod theme;
 #[cfg(any(windows, test))]
 mod timeline;
@@ -36,6 +39,8 @@ use theme::metrics;
 pub struct LaunchOptions {
     /// Initial window size in logical pixels.
     pub size: (f32, f32),
+    /// Whether `--size` explicitly supplied the initial size.
+    pub size_explicit: bool,
     /// Section shown first.
     pub screen: Screen,
     /// Zero-based index of the page shown first.
@@ -56,6 +61,7 @@ impl Default for LaunchOptions {
     fn default() -> Self {
         Self {
             size: (metrics::WINDOW_WIDTH, metrics::WINDOW_HEIGHT),
+            size_explicit: false,
             screen: Screen::Design,
             page: 0,
             select: None,
@@ -103,6 +109,7 @@ pub fn parse_options(arguments: impl IntoIterator<Item = String>) -> Result<Laun
                         ));
                     }
                 };
+                options.size_explicit = true;
             }
             "--screen" => {
                 let text = value("--screen")?;
@@ -154,8 +161,10 @@ mod app {
     use crate::{
         LaunchOptions,
         shell::{
-            self, Cancel, DeleteSelection, FocusNext, FocusPrevious, NewDocument, Open, Redo, Save,
-            SaveAs, Shell, ToggleTheme, ToggleTimeline, Undo,
+            self, Cancel, DeleteSelection, FocusNext, FocusPrevious, MoveSelectionDown,
+            MoveSelectionEnd, MoveSelectionHome, MoveSelectionUp, MoveTabLeft, MoveTabRight,
+            NewDocument, Open, Redo, Save, SaveAs, Shell, ToggleTheme, ToggleTimeline, Undo,
+            ZoomFit, ZoomIn, ZoomOut, ZoomReset,
         },
         strings,
         theme::metrics,
@@ -183,62 +192,90 @@ mod app {
         if log::set_logger(&StderrLogger).is_ok() {
             log::set_max_level(log::LevelFilter::Warn);
         }
-        Application::new().run(move |cx: &mut App| {
-            let context = Some(shell::KEY_CONTEXT);
-            cx.bind_keys([
-                KeyBinding::new("ctrl-t", ToggleTimeline, context),
-                KeyBinding::new("ctrl-shift-l", ToggleTheme, context),
-                KeyBinding::new("tab", FocusNext, context),
-                KeyBinding::new("shift-tab", FocusPrevious, context),
-                KeyBinding::new("ctrl-z", Undo, context),
-                KeyBinding::new("ctrl-shift-z", Redo, context),
-                KeyBinding::new("ctrl-y", Redo, context),
-                KeyBinding::new("ctrl-s", Save, context),
-                KeyBinding::new("ctrl-shift-s", SaveAs, context),
-                KeyBinding::new("ctrl-o", Open, context),
-                KeyBinding::new("ctrl-n", NewDocument, context),
-                KeyBinding::new("delete", DeleteSelection, context),
-                KeyBinding::new("backspace", DeleteSelection, context),
-                KeyBinding::new("escape", Cancel, context),
-            ]);
-            let (width, height) = options.size;
-            let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
-            let opened = cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    window_min_size: Some(size(
-                        px(metrics::MIN_WINDOW_WIDTH),
-                        px(metrics::MIN_WINDOW_HEIGHT),
-                    )),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some(strings::APP_NAME.into()),
+        Application::new()
+            .with_assets(crate::icons::Assets)
+            .run(move |cx: &mut App| {
+                let context = Some(shell::KEY_CONTEXT);
+                cx.bind_keys([
+                    KeyBinding::new("ctrl-t", ToggleTimeline, context),
+                    KeyBinding::new("ctrl-shift-l", ToggleTheme, context),
+                    KeyBinding::new("up", MoveSelectionUp, Some("VerticalList")),
+                    KeyBinding::new("down", MoveSelectionDown, Some("VerticalList")),
+                    KeyBinding::new("home", MoveSelectionHome, Some("VerticalList")),
+                    KeyBinding::new("end", MoveSelectionEnd, Some("VerticalList")),
+                    KeyBinding::new("left", MoveTabLeft, Some("TabList")),
+                    KeyBinding::new("right", MoveTabRight, Some("TabList")),
+                    KeyBinding::new("tab", FocusNext, context),
+                    KeyBinding::new("shift-tab", FocusPrevious, context),
+                    KeyBinding::new("ctrl-z", Undo, context),
+                    KeyBinding::new("ctrl-shift-z", Redo, context),
+                    KeyBinding::new("ctrl-y", Redo, context),
+                    KeyBinding::new("ctrl-s", Save, context),
+                    KeyBinding::new("ctrl-shift-s", SaveAs, context),
+                    KeyBinding::new("ctrl-o", Open, context),
+                    KeyBinding::new("ctrl-n", NewDocument, context),
+                    KeyBinding::new("delete", DeleteSelection, context),
+                    KeyBinding::new("backspace", DeleteSelection, context),
+                    KeyBinding::new("escape", Cancel, context),
+                    KeyBinding::new("ctrl-=", ZoomIn, context),
+                    KeyBinding::new("ctrl-+", ZoomIn, context),
+                    KeyBinding::new("ctrl--", ZoomOut, context),
+                    KeyBinding::new("ctrl-0", ZoomFit, context),
+                    KeyBinding::new("ctrl-1", ZoomReset, context),
+                ]);
+                cx.bind_keys(
+                    ["delete", "backspace", "escape"]
+                        .map(|key| KeyBinding::new(key, gpui::NoAction, Some("TextField"))),
+                );
+                let saved_window = designer_engine::preferences::Preferences::load(
+                    &designer_engine::identity::data_dir(),
+                )
+                .preferences
+                .window_size;
+                let (width, height) = if !options.size_explicit {
+                    saved_window
+                        .map(|size| (size.width, size.height))
+                        .unwrap_or(options.size)
+                } else {
+                    options.size
+                };
+                let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
+                let opened = cx.open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        window_min_size: Some(size(
+                            px(metrics::MIN_WINDOW_WIDTH),
+                            px(metrics::MIN_WINDOW_HEIGHT),
+                        )),
+                        titlebar: Some(TitlebarOptions {
+                            title: Some(strings::APP_NAME.into()),
+                            ..Default::default()
+                        }),
                         ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-                |window, cx| {
-                    let shell = cx.new(|cx| Shell::new(&options, window, cx));
-                    window.focus(&shell.read(cx).focus_handle());
-                    let closing = shell.clone();
-                    window.on_window_should_close(cx, move |window, cx| {
-                        closing.update(cx, |shell, cx| shell.should_close(window, cx))
-                    });
-                    shell
-                },
-            );
-            if let Err(error) = opened {
-                eprintln!("Window creation failed: {error}");
-                cx.quit();
-                return;
-            }
-            cx.activate(true);
-            cx.on_window_closed(|cx| {
-                if cx.windows().is_empty() {
+                    },
+                    |window, cx| {
+                        let shell = cx.new(|cx| Shell::new(&options, window, cx));
+                        window.focus(&shell.read(cx).focus_handle());
+                        let closing = shell.clone();
+                        window.on_window_should_close(cx, move |window, cx| {
+                            closing.update(cx, |shell, cx| shell.should_close(window, cx))
+                        });
+                        shell
+                    },
+                );
+                if let Err(error) = opened {
+                    eprintln!("Window creation failed: {error}");
                     cx.quit();
+                    return;
                 }
-            })
-            .detach();
-        });
+                cx.activate(true);
+                cx.on_window_closed(|cx| {
+                    if cx.windows().is_empty() {
+                        cx.quit();
+                    }
+                })
+                .detach();
+            });
     }
 }
 
@@ -293,6 +330,7 @@ mod tests {
         ])
         .expect("valid options");
         assert_eq!(options.size, (390.0, 844.0));
+        assert!(options.size_explicit);
         assert_eq!(options.screen, Screen::Preferences);
         assert_eq!(options.page, 1);
         assert_eq!(options.select, Some(7));

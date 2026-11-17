@@ -79,6 +79,10 @@ pub mod metrics {
     pub const INDENT: f32 = 14.0;
     /// Side of a color swatch.
     pub const SWATCH: f32 = 16.0;
+    /// Width kept for the zoom percentage so the tool bar does not shift.
+    pub const ZOOM_LABEL_WIDTH: f32 = 56.0;
+    /// Side of an interface icon.
+    pub const ICON: f32 = 16.0;
     /// Width of a property label column.
     pub const LABEL_WIDTH: f32 = 84.0;
 

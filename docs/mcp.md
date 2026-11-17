@@ -5,6 +5,14 @@ transport. Build it with `cargo build --release -p designer-mcp`, then launch
 the resulting executable directly from the MCP client. It opens the sample
 document by default or a `.dsg` file supplied with `--open`.
 
+The desktop shell also includes tooltip-only icon buttons, interactive zoom/pan
+controls, keyboard arrow navigation for layers and tabs, and the newer editor
+operations `set_corner_radius`, `set_visible`, `set_locked`, `reorder_node`
+and `set_clips_content`.
+Preferences display the active named pipe and both live (`--connect`) and
+headless (`--open`) client command forms. Opened and saved documents are tracked
+in the desktop shell's recent-document list.
+
 ## Tools
 
 | Tool | Purpose |
@@ -23,6 +31,15 @@ node geometry/fill/opacity, keyframes, nested sequences, morph keys and
 interactive prototype states. A transaction either commits fully or leaves
 document and history untouched; one transaction creates one undo entry. A
 stale revision returns a conflict. Read the document again before retrying.
+The editor operations also include `set_corner_radius` (rectangles only),
+`set_visible`, `set_locked`, `reorder_node`, and `set_clips_content` (frames only).
+Each takes `page` and `node` IDs plus its named value (`corner_radius`, `visible`,
+`locked`, `index`, or `clips_content`). Reordering uses zero-based paint order
+within the current parent, clamps to the last sibling and never reparents.
+Radius must be finite and nonnegative. These operations share atomic validation,
+revision checks and undo/redo with the other operations and are advertised by
+`describe_capabilities`. Locks protect canvas interaction; agents can still
+explicitly modify locked nodes.
 Malformed operations, invalid documents, import failures and save errors are
 returned as tool errors. Stdio is reserved for MCP messages; diagnostics are
 not written to stdout.
@@ -61,7 +78,7 @@ Codex `config.toml`:
 ```toml
 [mcp_servers.designer]
 command = "C:\\Users\\YOUR_USER\\source\\Designer\\target\\release\\designer-mcp.exe"
-args = ["`--connect`"]
+args = ["--connect"]
 ```
 
 Claude Code `.mcp.json`:
@@ -71,7 +88,7 @@ Claude Code `.mcp.json`:
   "mcpServers": {
     "designer": {
       "command": "C:\\Users\\YOUR_USER\\source\\Designer\\target\\release\\designer-mcp.exe",
-      "args": ["`--connect`"]
+      "args": ["--connect"]
     }
   }
 }

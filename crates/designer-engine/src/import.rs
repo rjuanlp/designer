@@ -279,7 +279,12 @@ impl ImportContext {
 
         let kind_name = string(source, "type").unwrap_or_default();
         let kind = match kind_name.as_str() {
-            "FRAME" | "COMPONENT" | "INSTANCE" | "COMPONENT_SET" | "SECTION" => NodeKind::Frame,
+            "FRAME" | "COMPONENT" | "INSTANCE" | "COMPONENT_SET" | "SECTION" => NodeKind::Frame {
+                clips_content: source
+                    .get("clipsContent")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            },
             "GROUP" => NodeKind::Group,
             "RECTANGLE" => {
                 let corner_radius = number(source, "cornerRadius").unwrap_or(0.0);
@@ -378,12 +383,10 @@ impl ImportContext {
         {
             self.warn(source_path, "El modo de fusión no se importa.".to_owned());
         }
-        if source.get("clipsContent").and_then(Value::as_bool) == Some(true)
-            || source.get("isMask").and_then(Value::as_bool) == Some(true)
-        {
+        if source.get("isMask").and_then(Value::as_bool) == Some(true) {
             self.warn(
                 source_path,
-                "El recorte de contenido y las máscaras no se importan.".to_owned(),
+                "Las máscaras no se importan; el recorte de contenido ya se importa.".to_owned(),
             );
         }
         if source.get("opacity").is_some() && number(source, "opacity").is_none() {
@@ -703,6 +706,7 @@ mod tests {
         node["opacity"] = serde_json::json!(1.5);
         node["layoutMode"] = Value::String("HORIZONTAL".to_owned());
         node["strokes"] = serde_json::json!([{"type": "SOLID"}]);
+        node["isMask"] = Value::Bool(true);
         node["fills"] = serde_json::json!([
             {"type": "SOLID", "color": {"r": 0.1}},
             {"type": "SOLID", "color": {"r": 0.2, "g": 0.3, "b": 0.4}}
@@ -734,6 +738,8 @@ mod tests {
             "auto-layout",
             "componentes incompletos",
             "Solo se importa",
+            "máscaras",
+            "recorte de contenido",
         ] {
             assert!(
                 result

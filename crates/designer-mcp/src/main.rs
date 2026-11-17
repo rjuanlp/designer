@@ -306,7 +306,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(windows)]
             {
                 DesignerMcp::connect_windows_pipe(pipe.unwrap_or_else(|| {
-                    PathBuf::from(designer_engine::bridge::WINDOWS_SESSION_PIPE)
+                    PathBuf::from(designer_engine::bridge::windows_session_pipe())
                 }))
             }
             #[cfg(not(windows))]

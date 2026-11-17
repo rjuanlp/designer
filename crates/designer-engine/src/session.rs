@@ -113,6 +113,23 @@ impl Session {
         Ok(session)
     }
 
+    /// A session for a document recovered from a snapshot. It starts with
+    /// unsaved changes. When `original` can be locked it becomes the file of
+    /// the document, so a plain save writes back to it; otherwise the
+    /// document has no file and must be saved under a new name.
+    pub fn recovered(document: Document, original: Option<&Path>) -> Self {
+        let mut session = Self::new(document);
+        session.saved_state = None;
+        if let Some(path) = original
+            && let Ok(lock) = normalized_path(path)
+                .and_then(|normalized| DocumentLock::acquire(&normalized, path))
+        {
+            session.file_lock = Some(lock);
+            session.path = Some(path.to_owned());
+        }
+        session
+    }
+
     /// Reload a path, retaining ownership when reopening the current file.
     pub fn reopen(&mut self, path: &Path) -> Result<Self, DsgError> {
         if self
@@ -478,6 +495,30 @@ mod tests {
         assert!(matches!(error, DsgError::Locked { path: ref p } if p == &path));
         drop(session);
         drop(Session::open(&path).expect("released"));
+        std::fs::remove_file(path).expect("cleanup");
+    }
+
+    #[test]
+    fn a_recovered_session_is_unsaved_and_writes_back_only_when_it_can_lock() {
+        let path = std::env::temp_dir().join(format!("recovered-{}.dsg", std::process::id()));
+        let mut owner = Session::new(Document::empty("owner"));
+        owner.save_as(&path).expect("save");
+        let mut document = Document::empty("recovered");
+        document.name = "recovered".into();
+
+        // Another session holds the file: the recovered one has no file.
+        let blocked = Session::recovered(document.clone(), Some(&path));
+        assert!(blocked.is_dirty());
+        assert_eq!(blocked.path(), None);
+
+        drop(owner);
+        let mut recovered = Session::recovered(document, Some(&path));
+        assert!(recovered.is_dirty());
+        assert_eq!(recovered.path(), Some(path.as_path()));
+        assert!(recovered.save().expect("saved"));
+        assert!(!recovered.is_dirty());
+        assert_eq!(dsg::open(&path).expect("read").name, "recovered");
+        drop(recovered);
         std::fs::remove_file(path).expect("cleanup");
     }
 }
