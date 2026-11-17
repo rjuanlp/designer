@@ -1839,6 +1839,9 @@ impl Shell {
         if !self.timeline_open {
             self.animation.pause();
             self.animation.preview = false;
+            // Focus may sit on a timeline control that is about to vanish,
+            // which would leave no key context for the shortcuts.
+            window.focus(&self.focus);
         }
         self.save_preferences(window);
         self.redraw(cx);

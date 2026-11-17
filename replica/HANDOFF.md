@@ -106,13 +106,11 @@ Problemas abiertos conocidos:
    inyectado o de la tecla `=` en la distribución latinoamericana); la tilde
    muerta + `a` dio `a` sin acento; pan con botón central y Espacio+arrastre
    no se pueden simular.
-5. Tras cerrar la línea de tiempo con el foco dentro, los atajos no responden
-   hasta hacer clic en el lienzo (el foco queda en un elemento que ya no
-   existe). Arreglo propuesto: devolver el foco al shell al ocultar la línea
-   de tiempo.
+5. ~~Atajos sin respuesta tras cerrar la línea de tiempo con el foco dentro~~:
+   resuelto devolviendo el foco al shell al ocultarla; probado (clic en
+   1000 ms, Ctrl+T, Ctrl+Mayús+L cambia el tema sin otro clic).
 
-Falta del paquete 1: prueba manual del punto 4, decidir el punto 5 y
-fusionar en `main`.
+Falta del paquete 1: prueba manual del punto 4 y fusionar en `main`.
 
 ## Paquete 2: primer corte
 
